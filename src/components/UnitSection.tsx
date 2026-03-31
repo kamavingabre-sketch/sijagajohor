@@ -35,12 +35,12 @@ const units = [
 ];
 
 const kelurahan = [
-  'Siti Rejo I',
-  'Siti Rejo II',
-  'Siti Rejo III',
-  'Pangkalan Masyhur',
-  'Titi Kuning',
   'Kwala Bekala',
+  'Gedung Johor',
+  'Kedai Durian',
+  'Suka Maju',
+  'Titi Kuning',
+  'Pangkalan Mansyur',
 ];
 
 export default function UnitSection() {

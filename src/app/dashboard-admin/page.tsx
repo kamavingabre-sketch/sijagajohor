@@ -55,7 +55,7 @@ export default function DashboardAdmin() {
 
   // Create account form
   const [form, setForm] = useState({
-    nama: '', nip: '', unit: 'melati', kelurahan: 'Siti Rejo I',
+    nama: '', nip: '', unit: 'melati', kelurahan: 'Kwala Bekala',
     nomor_hp: '', username: '', password: '', role: 'petugas'
   });
   const [creating, setCreating] = useState(false);
@@ -198,7 +198,7 @@ export default function DashboardAdmin() {
 
   if (!user) return null;
 
-  const kelurahanList = ['Siti Rejo I', 'Siti Rejo II', 'Siti Rejo III', 'Pangkalan Masyhur', 'Titi Kuning', 'Kwala Bekala'];
+  const kelurahanList = ['Kwala Bekala', 'Gedung Johor', 'Kedai Durian', 'Suka Maju', 'Titi Kuning', 'Pangkalan Mansyur'];
 
   return (
     <div className="min-h-screen bg-mj-cream">
