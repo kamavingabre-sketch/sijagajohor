@@ -93,9 +93,29 @@ CREATE INDEX IF NOT EXISTS idx_alerts_target ON alerts(target_petugas_id);
 CREATE INDEX IF NOT EXISTS idx_alerts_created ON alerts(created_at DESC);
 
 -- 8. Enable Realtime
-ALTER PUBLICATION supabase_realtime ADD TABLE lokasi_petugas;
-ALTER PUBLICATION supabase_realtime ADD TABLE absensi;
-ALTER PUBLICATION supabase_realtime ADD TABLE alerts;
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_publication_tables
+    WHERE pubname = 'supabase_realtime' AND tablename = 'lokasi_petugas'
+  ) THEN
+    ALTER PUBLICATION supabase_realtime ADD TABLE lokasi_petugas;
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_publication_tables
+    WHERE pubname = 'supabase_realtime' AND tablename = 'absensi'
+  ) THEN
+    ALTER PUBLICATION supabase_realtime ADD TABLE absensi;
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_publication_tables
+    WHERE pubname = 'supabase_realtime' AND tablename = 'alerts'
+  ) THEN
+    ALTER PUBLICATION supabase_realtime ADD TABLE alerts;
+  END IF;
+END $$;
 
 -- 9. Row Level Security
 ALTER TABLE petugas ENABLE ROW LEVEL SECURITY;
@@ -104,6 +124,17 @@ ALTER TABLE lokasi_petugas ENABLE ROW LEVEL SECURITY;
 ALTER TABLE foto_bukti ENABLE ROW LEVEL SECURITY;
 ALTER TABLE foto_kegiatan ENABLE ROW LEVEL SECURITY;
 ALTER TABLE alerts ENABLE ROW LEVEL SECURITY;
+
+-- DROP dulu supaya aman jika sudah ada (idempotent)
+DO $$ DECLARE t TEXT;
+BEGIN
+  FOR t IN SELECT unnest(ARRAY['petugas','absensi','lokasi_petugas','foto_bukti','foto_kegiatan','alerts']) LOOP
+    EXECUTE format('DROP POLICY IF EXISTS allow_all_read   ON %I', t);
+    EXECUTE format('DROP POLICY IF EXISTS allow_all_insert ON %I', t);
+    EXECUTE format('DROP POLICY IF EXISTS allow_all_update ON %I', t);
+    EXECUTE format('DROP POLICY IF EXISTS allow_all_delete ON %I', t);
+  END LOOP;
+END $$;
 
 CREATE POLICY "allow_all_read"   ON petugas       FOR SELECT USING (true);
 CREATE POLICY "allow_all_read"   ON absensi        FOR SELECT USING (true);

@@ -36,6 +36,7 @@ export default function MapPetugas({ locations }: { locations: LokasiFresh[] }) 
         center,
         zoom: 13,
         zoomControl: true,
+        scrollWheelZoom: true,
       });
 
       L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
@@ -146,7 +147,7 @@ export default function MapPetugas({ locations }: { locations: LokasiFresh[] }) 
   return (
     <div
       ref={mapRef}
-      style={{ height: '380px', width: '100%', borderRadius: '12px', overflow: 'hidden' }}
+      style={{ height: '380px', width: '100%', borderRadius: '12px', overflow: 'hidden', zIndex: 0, position: 'relative' }}
     />
   );
 }
