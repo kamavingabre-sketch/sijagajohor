@@ -1,13 +1,14 @@
 -- ============================================================
--- SIJAGA JOHOR — Supabase Schema
+-- SIJAGA JOHOR — Supabase Schema v4
 -- Jalankan di Supabase SQL Editor (Settings > SQL Editor)
 -- ============================================================
 
 -- 1. Tabel petugas (users)
+-- PERUBAHAN v4: nip dijadikan opsional (nullable), bukan required
 CREATE TABLE IF NOT EXISTS petugas (
   id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
   nama TEXT NOT NULL,
-  nip TEXT UNIQUE NOT NULL,
+  nip TEXT UNIQUE,                          -- nullable, tidak wajib lagi
   unit TEXT CHECK (unit IN ('melati', 'bestari')) NOT NULL,
   kelurahan TEXT NOT NULL,
   nomor_hp TEXT,
@@ -18,6 +19,9 @@ CREATE TABLE IF NOT EXISTS petugas (
   aktif BOOLEAN DEFAULT true,
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
+
+-- Jika tabel sudah ada, jalankan ALTER ini untuk mengubah NIP menjadi nullable:
+-- ALTER TABLE petugas ALTER COLUMN nip DROP NOT NULL;
 
 -- 2. Tabel absensi
 CREATE TABLE IF NOT EXISTS absensi (
@@ -57,48 +61,81 @@ CREATE TABLE IF NOT EXISTS foto_bukti (
   uploaded_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- 5. Index untuk performa
+-- 5. Tabel foto_kegiatan (dokumentasi kegiatan harian)
+CREATE TABLE IF NOT EXISTS foto_kegiatan (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  petugas_id UUID REFERENCES petugas(id) ON DELETE CASCADE,
+  url TEXT NOT NULL,
+  deskripsi TEXT NOT NULL,
+  uploaded_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- 6. Tabel alerts (NEW v4) — Admin alert ke petugas
+CREATE TABLE IF NOT EXISTS alerts (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  admin_id UUID REFERENCES petugas(id) ON DELETE CASCADE,
+  judul TEXT NOT NULL DEFAULT 'Alert dari Admin',
+  deskripsi TEXT NOT NULL,
+  target_type TEXT CHECK (target_type IN ('personal', 'mass')) NOT NULL DEFAULT 'personal',
+  target_petugas_id UUID REFERENCES petugas(id) ON DELETE CASCADE,
+  dibaca BOOLEAN DEFAULT false,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- 7. Index untuk performa
 CREATE INDEX IF NOT EXISTS idx_lokasi_petugas_id ON lokasi_petugas(petugas_id);
 CREATE INDEX IF NOT EXISTS idx_lokasi_timestamp ON lokasi_petugas(timestamp DESC);
 CREATE INDEX IF NOT EXISTS idx_absensi_tanggal ON absensi(tanggal);
 CREATE INDEX IF NOT EXISTS idx_absensi_petugas ON absensi(petugas_id);
+CREATE INDEX IF NOT EXISTS idx_foto_kegiatan_petugas ON foto_kegiatan(petugas_id);
+CREATE INDEX IF NOT EXISTS idx_foto_kegiatan_time ON foto_kegiatan(uploaded_at DESC);
+CREATE INDEX IF NOT EXISTS idx_alerts_target ON alerts(target_petugas_id);
+CREATE INDEX IF NOT EXISTS idx_alerts_created ON alerts(created_at DESC);
 
--- 6. Enable Realtime untuk tabel lokasi
+-- 8. Enable Realtime
 ALTER PUBLICATION supabase_realtime ADD TABLE lokasi_petugas;
 ALTER PUBLICATION supabase_realtime ADD TABLE absensi;
+ALTER PUBLICATION supabase_realtime ADD TABLE alerts;
 
--- 7. Row Level Security
+-- 9. Row Level Security
 ALTER TABLE petugas ENABLE ROW LEVEL SECURITY;
 ALTER TABLE absensi ENABLE ROW LEVEL SECURITY;
 ALTER TABLE lokasi_petugas ENABLE ROW LEVEL SECURITY;
 ALTER TABLE foto_bukti ENABLE ROW LEVEL SECURITY;
+ALTER TABLE foto_kegiatan ENABLE ROW LEVEL SECURITY;
+ALTER TABLE alerts ENABLE ROW LEVEL SECURITY;
 
--- Policy: semua bisa baca (untuk demo, nanti bisa dikunci lebih ketat)
-CREATE POLICY "allow_all_read" ON petugas FOR SELECT USING (true);
-CREATE POLICY "allow_all_read" ON absensi FOR SELECT USING (true);
-CREATE POLICY "allow_all_read" ON lokasi_petugas FOR SELECT USING (true);
-CREATE POLICY "allow_all_read" ON foto_bukti FOR SELECT USING (true);
+CREATE POLICY "allow_all_read"   ON petugas       FOR SELECT USING (true);
+CREATE POLICY "allow_all_read"   ON absensi        FOR SELECT USING (true);
+CREATE POLICY "allow_all_read"   ON lokasi_petugas FOR SELECT USING (true);
+CREATE POLICY "allow_all_read"   ON foto_bukti     FOR SELECT USING (true);
+CREATE POLICY "allow_all_read"   ON foto_kegiatan  FOR SELECT USING (true);
+CREATE POLICY "allow_all_read"   ON alerts         FOR SELECT USING (true);
 
-CREATE POLICY "allow_all_insert" ON petugas FOR INSERT WITH CHECK (true);
-CREATE POLICY "allow_all_insert" ON absensi FOR INSERT WITH CHECK (true);
+CREATE POLICY "allow_all_insert" ON petugas        FOR INSERT WITH CHECK (true);
+CREATE POLICY "allow_all_insert" ON absensi        FOR INSERT WITH CHECK (true);
 CREATE POLICY "allow_all_insert" ON lokasi_petugas FOR INSERT WITH CHECK (true);
-CREATE POLICY "allow_all_insert" ON foto_bukti FOR INSERT WITH CHECK (true);
+CREATE POLICY "allow_all_insert" ON foto_bukti     FOR INSERT WITH CHECK (true);
+CREATE POLICY "allow_all_insert" ON foto_kegiatan  FOR INSERT WITH CHECK (true);
+CREATE POLICY "allow_all_insert" ON alerts         FOR INSERT WITH CHECK (true);
 
-CREATE POLICY "allow_all_update" ON absensi FOR UPDATE USING (true);
-CREATE POLICY "allow_all_update" ON petugas FOR UPDATE USING (true);
+CREATE POLICY "allow_all_update" ON absensi        FOR UPDATE USING (true);
+CREATE POLICY "allow_all_update" ON petugas        FOR UPDATE USING (true);
+CREATE POLICY "allow_all_update" ON alerts         FOR UPDATE USING (true);
 
-CREATE POLICY "allow_all_delete" ON petugas FOR DELETE USING (true);
+CREATE POLICY "allow_all_delete" ON petugas        FOR DELETE USING (true);
+CREATE POLICY "allow_all_delete" ON alerts         FOR DELETE USING (true);
 
--- 8. Storage bucket untuk foto (jalankan di Supabase Storage)
--- Buat bucket bernama "foto-bukti" dengan akses public
--- INSERT INTO storage.buckets (id, name, public) VALUES ('foto-bukti', 'foto-bukti', true);
+-- 10. Storage bucket foto-bukti: buat di Dashboard > Storage, set Public = true
+-- Lalu jalankan storage policy agar upload tidak kena RLS error:
+-- INSERT INTO storage.policies (bucket_id, name, definition, operation)
+-- VALUES ('foto-bukti', 'allow_public_upload', 'true', 'INSERT') ON CONFLICT DO NOTHING;
 
--- 9. Seed: akun admin default
--- Password: admin123 (ganti segera setelah deploy!)
+-- 11. Seed: akun admin default
 INSERT INTO petugas (nama, nip, unit, kelurahan, username, password_hash, role, nomor_hp)
 VALUES (
   'Administrator Kecamatan',
-  'ADMIN001',
+  NULL,
   'melati',
   'Semua Kelurahan',
   'admin',
@@ -108,24 +145,6 @@ VALUES (
 ) ON CONFLICT (username) DO NOTHING;
 
 -- ============================================================
--- TAMBAHAN: Tabel foto_kegiatan (dokumentasi kegiatan harian)
+-- MIGRASI (jika sudah ada data lama):
+-- ALTER TABLE petugas ALTER COLUMN nip DROP NOT NULL;
 -- ============================================================
-
-CREATE TABLE IF NOT EXISTS foto_kegiatan (
-  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-  petugas_id UUID REFERENCES petugas(id) ON DELETE CASCADE,
-  url TEXT NOT NULL,
-  deskripsi TEXT NOT NULL,
-  uploaded_at TIMESTAMPTZ DEFAULT NOW()
-);
-
-CREATE INDEX IF NOT EXISTS idx_foto_kegiatan_petugas ON foto_kegiatan(petugas_id);
-CREATE INDEX IF NOT EXISTS idx_foto_kegiatan_time ON foto_kegiatan(uploaded_at DESC);
-
-ALTER TABLE foto_kegiatan ENABLE ROW LEVEL SECURITY;
-CREATE POLICY "allow_all_read"   ON foto_kegiatan FOR SELECT USING (true);
-CREATE POLICY "allow_all_insert" ON foto_kegiatan FOR INSERT WITH CHECK (true);
-CREATE POLICY "allow_all_delete" ON foto_kegiatan FOR DELETE USING (true);
-
--- Enable realtime untuk foto_kegiatan (opsional)
--- ALTER PUBLICATION supabase_realtime ADD TABLE foto_kegiatan;

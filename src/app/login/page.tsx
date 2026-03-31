@@ -122,7 +122,7 @@ function FormContent({ role, username, onUsernameChange, password, onPasswordCha
         )}
         <div className="space-y-4">
           <div>
-            <label className="block font-body font-semibold text-mj-blue text-sm mb-2">Username / NIP</label>
+            <label className="block font-body font-semibold text-mj-blue text-sm mb-2">Username</label>
             <div className="relative">
               <User size={15} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-mj-blue/30" />
               <input
@@ -130,7 +130,7 @@ function FormContent({ role, username, onUsernameChange, password, onPasswordCha
                 value={username}
                 onChange={e => onUsernameChange(e.target.value)}
                 onKeyDown={e => e.key === 'Enter' && onLogin()}
-                placeholder={isPetugas ? 'Masukkan NIP Anda' : 'Masukkan username admin'}
+                placeholder={isPetugas ? 'Masukkan username Anda' : 'Masukkan username admin'}
                 autoComplete="username"
                 className="w-full pl-10 pr-4 py-3.5 border border-gray-200 rounded-xl font-body text-sm text-mj-blue placeholder-gray-300 focus:outline-none focus:ring-2 focus:ring-mj-blue/20 focus:border-mj-blue transition-all"
               />

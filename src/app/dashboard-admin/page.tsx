@@ -9,6 +9,7 @@ import {
   Eye, CheckCircle, XCircle, AlertTriangle, Loader2,
   Navigation, RefreshCw, X, Search, Phone, Leaf, Truck,
   Download, Image, Calendar, ChevronDown, BarChart2,
+  BellRing, BellOff, Send,
 } from 'lucide-react';
 
 // Dynamic import untuk MapPetugas (no SSR — Leaflet butuh window)
@@ -18,10 +19,10 @@ const MapPetugas = dynamic(() => import('@/components/admin/MapPetugas'), { ssr:
   </div>
 )});
 
-type Tab = 'peta' | 'absensi' | 'foto' | 'galeri' | 'petugas';
+type Tab = 'peta' | 'absensi' | 'foto' | 'galeri' | 'petugas' | 'alert';
 
 interface Petugas {
-  id: string; nama: string; nip: string; unit: string;
+  id: string; nama: string; unit: string;
   kelurahan: string; nomor_hp: string; username: string;
   aktif: boolean; created_at: string;
 }
@@ -29,7 +30,7 @@ interface Absensi {
   id: string; petugas_id: string; tanggal: string;
   jam_masuk: string | null; jam_keluar: string | null;
   foto_bukti_url: string | null; status: string;
-  petugas: { nama: string; unit: string; kelurahan: string; nip: string };
+  petugas: { nama: string; unit: string; kelurahan: string };
 }
 interface LokasiFresh {
   petugas_id: string; latitude: number; longitude: number;
@@ -99,9 +100,17 @@ export default function DashboardAdmin() {
   });
 
   // Create account form
-  const [form, setForm] = useState({ nama:'', nip:'', unit:'melati', kelurahan:'Kwala Bekala', nomor_hp:'', username:'', password:'', role:'petugas' });
+  const [form, setForm] = useState({ nama:'', unit:'melati', kelurahan:'Kwala Bekala', nomor_hp:'', username:'', password:'', role:'petugas' });
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState('');
+
+  // Alert state
+  const [showAlertModal, setShowAlertModal] = useState(false);
+  const [alertTarget, setAlertTarget] = useState<'personal' | 'mass'>('personal');
+  const [alertTargetId, setAlertTargetId] = useState('');
+  const [alertDeskripsi, setAlertDeskripsi] = useState('');
+  const [alertJudul, setAlertJudul] = useState('');
+  const [sendingAlert, setSendingAlert] = useState(false);
 
   useEffect(() => {
     const tick = () => setTime(new Date().toLocaleTimeString('id-ID', { hour:'2-digit', minute:'2-digit', second:'2-digit' }));
@@ -146,7 +155,7 @@ export default function DashboardAdmin() {
 
   const fetchAbsensi = async () => {
     setLoadingAbsensi(true);
-    let query = supabase.from('absensi').select('*, petugas(nama, unit, kelurahan, nip)').order('tanggal', { ascending: false }).order('jam_masuk', { ascending: false });
+    let query = supabase.from('absensi').select('*, petugas(nama, unit, kelurahan)').order('tanggal', { ascending: false }).order('jam_masuk', { ascending: false });
     if (absensiMode === 'harian') {
       query = query.eq('tanggal', absensiDate);
     } else {
@@ -185,14 +194,14 @@ export default function DashboardAdmin() {
 
   const handleCreatePetugas = async () => {
     setCreateError('');
-    if (!form.nama || !form.nip || !form.username || !form.password) { setCreateError('Semua field wajib diisi.'); return; }
+    if (!form.nama || !form.username || !form.password) { setCreateError('Nama, username, dan password wajib diisi.'); return; }
     setCreating(true);
-    const { error } = await supabase.from('petugas').insert({ nama: form.nama, nip: form.nip, unit: form.unit, kelurahan: form.kelurahan, nomor_hp: form.nomor_hp, username: form.username, password_hash: form.password, role: form.role, aktif: true });
+    const { error } = await supabase.from('petugas').insert({ nama: form.nama, unit: form.unit, kelurahan: form.kelurahan, nomor_hp: form.nomor_hp, username: form.username, password_hash: form.password, role: form.role, aktif: true });
     setCreating(false);
-    if (error) { setCreateError('Gagal: ' + (error.message.includes('duplicate') ? 'Username/NIP sudah ada' : error.message)); return; }
+    if (error) { setCreateError('Gagal: ' + (error.message.includes('duplicate') ? 'Username sudah ada' : error.message)); return; }
     showToast('Akun petugas berhasil dibuat!', 'ok');
     setShowCreateForm(false);
-    setForm({ nama:'', nip:'', unit:'melati', kelurahan:'Kwala Bekala', nomor_hp:'', username:'', password:'', role:'petugas' });
+    setForm({ nama:'', unit:'melati', kelurahan:'Kwala Bekala', nomor_hp:'', username:'', password:'', role:'petugas' });
     fetchPetugas();
   };
 
@@ -200,6 +209,26 @@ export default function DashboardAdmin() {
     await supabase.from('petugas').update({ aktif: !aktif }).eq('id', id);
     fetchPetugas();
     showToast(`Petugas ${!aktif ? 'diaktifkan' : 'dinonaktifkan'}`, 'ok');
+  };
+
+  const handleSendAlert = async () => {
+    if (!alertDeskripsi.trim()) { showToast('Deskripsi alert wajib diisi!', 'err'); return; }
+    if (alertTarget === 'personal' && !alertTargetId) { showToast('Pilih petugas yang akan di-alert!', 'err'); return; }
+    setSendingAlert(true);
+    const payload: Record<string, unknown> = {
+      admin_id: user!.id,
+      judul: alertJudul.trim() || 'Alert dari Admin',
+      deskripsi: alertDeskripsi.trim(),
+      target_type: alertTarget,
+      target_petugas_id: alertTarget === 'personal' ? alertTargetId : null,
+      dibaca: false,
+    };
+    const { error } = await supabase.from('alerts').insert(payload);
+    setSendingAlert(false);
+    if (error) { showToast('Gagal mengirim alert: ' + error.message, 'err'); return; }
+    showToast(alertTarget === 'mass' ? 'Mass alert berhasil dikirim ke semua petugas!' : 'Alert berhasil dikirim!', 'ok');
+    setShowAlertModal(false);
+    setAlertDeskripsi(''); setAlertJudul(''); setAlertTargetId(''); setAlertTarget('personal');
   };
 
   const handleLogout = () => { logout(); router.push('/login'); };
@@ -225,7 +254,7 @@ export default function DashboardAdmin() {
     const rows = absensiList.map(a => ({
       'Tanggal': a.tanggal || '',
       'Nama': a.petugas?.nama || '',
-      'NIP': a.petugas?.nip || '',
+      'Nomor HP': (a.petugas as any)?.nomor_hp || '',
       'Unit': a.petugas?.unit || '',
       'Kelurahan': a.petugas?.kelurahan || '',
       'Jam Masuk': formatTime(a.jam_masuk),
@@ -240,12 +269,11 @@ export default function DashboardAdmin() {
   };
 
   const filteredAbsensi = absensiList.filter(a =>
-    a.petugas?.nama?.toLowerCase().includes(search.toLowerCase()) ||
-    a.petugas?.nip?.toLowerCase().includes(search.toLowerCase())
+    a.petugas?.nama?.toLowerCase().includes(search.toLowerCase())
   );
   const filteredPetugas = petugasList.filter(p =>
     p.nama.toLowerCase().includes(search.toLowerCase()) ||
-    p.nip.toLowerCase().includes(search.toLowerCase())
+    p.username.toLowerCase().includes(search.toLowerCase())
   );
 
   // Stats for absensi
@@ -266,6 +294,95 @@ export default function DashboardAdmin() {
       {toast && (
         <div className={`fixed top-4 right-4 z-50 flex items-center gap-3 px-5 py-3.5 rounded-xl shadow-2xl font-body text-sm font-semibold ${toast.type === 'ok' ? 'bg-emerald-600 text-white' : 'bg-mj-red text-white'}`}>
           {toast.type === 'ok' ? <CheckCircle size={16} /> : <AlertTriangle size={16} />} {toast.msg}
+        </div>
+      )}
+
+      {/* ══ ALERT MODAL ══ */}
+      {showAlertModal && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg" onClick={e => e.stopPropagation()}>
+            {/* Header */}
+            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 bg-mj-red rounded-xl flex items-center justify-center">
+                  <BellRing size={18} className="text-white" />
+                </div>
+                <div>
+                  <p className="font-display font-black text-mj-blue text-base uppercase tracking-wide">Alert Petugas</p>
+                  <p className="text-mj-blue/40 text-xs font-body">Kirim notifikasi darurat ke petugas</p>
+                </div>
+              </div>
+              <button onClick={() => setShowAlertModal(false)} className="text-gray-400 hover:text-gray-600 transition-colors">
+                <X size={20} />
+              </button>
+            </div>
+
+            {/* Body */}
+            <div className="px-6 py-5 space-y-4">
+              {/* Target Type */}
+              <div>
+                <label className="block font-body font-semibold text-mj-blue text-xs mb-2 uppercase tracking-wide">Jenis Alert</label>
+                <div className="grid grid-cols-2 gap-2">
+                  <button onClick={() => setAlertTarget('personal')}
+                    className={`flex items-center gap-2 px-4 py-3 rounded-xl border-2 text-sm font-body font-semibold transition-all ${alertTarget === 'personal' ? 'border-mj-blue bg-blue-50 text-mj-blue' : 'border-gray-200 text-gray-400 hover:border-gray-300'}`}>
+                    <Users size={15} /> Petugas Tertentu
+                  </button>
+                  <button onClick={() => { setAlertTarget('mass'); setAlertTargetId(''); }}
+                    className={`flex items-center gap-2 px-4 py-3 rounded-xl border-2 text-sm font-body font-semibold transition-all ${alertTarget === 'mass' ? 'border-mj-red bg-red-50 text-mj-red' : 'border-gray-200 text-gray-400 hover:border-gray-300'}`}>
+                    <BellRing size={15} /> Mass Alert
+                  </button>
+                </div>
+                {alertTarget === 'mass' && (
+                  <p className="mt-2 text-xs text-mj-red/70 font-body bg-red-50 rounded-lg px-3 py-2">
+                    ⚠️ Semua petugas aktif (kecuali admin) akan menerima notifikasi ini.
+                  </p>
+                )}
+              </div>
+
+              {/* Target Petugas (personal only) */}
+              {alertTarget === 'personal' && (
+                <div>
+                  <label className="block font-body font-semibold text-mj-blue text-xs mb-2 uppercase tracking-wide">Pilih Petugas</label>
+                  <select value={alertTargetId} onChange={e => setAlertTargetId(e.target.value)}
+                    className="w-full border border-gray-200 rounded-xl px-3 py-2.5 font-body text-sm text-mj-blue focus:outline-none focus:ring-2 focus:ring-mj-blue/20">
+                    <option value="">— Pilih petugas —</option>
+                    {petugasList.filter(p => p.aktif && p.id !== user!.id).map(p => (
+                      <option key={p.id} value={p.id}>{p.nama} ({p.unit} · {p.kelurahan})</option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
+              {/* Judul */}
+              <div>
+                <label className="block font-body font-semibold text-mj-blue text-xs mb-2 uppercase tracking-wide">Judul Alert</label>
+                <input type="text" value={alertJudul} onChange={e => setAlertJudul(e.target.value)}
+                  placeholder="Contoh: Perintah Segera, Instruksi Khusus..."
+                  className="w-full border border-gray-200 rounded-xl px-3 py-2.5 font-body text-sm text-mj-blue focus:outline-none focus:ring-2 focus:ring-mj-blue/20" />
+              </div>
+
+              {/* Deskripsi */}
+              <div>
+                <label className="block font-body font-semibold text-mj-blue text-xs mb-2 uppercase tracking-wide">Deskripsi / Pesan</label>
+                <textarea value={alertDeskripsi} onChange={e => setAlertDeskripsi(e.target.value)}
+                  placeholder="Tuliskan instruksi atau alasan alert di sini..."
+                  rows={3}
+                  className="w-full border border-gray-200 rounded-xl px-3 py-2.5 font-body text-sm text-mj-blue focus:outline-none focus:ring-2 focus:ring-mj-blue/20 resize-none" />
+              </div>
+            </div>
+
+            {/* Footer */}
+            <div className="flex gap-3 px-6 pb-5">
+              <button onClick={() => setShowAlertModal(false)}
+                className="flex-1 border border-gray-200 text-gray-500 font-body font-semibold py-3 rounded-xl hover:bg-gray-50 transition-colors text-sm">
+                Batal
+              </button>
+              <button onClick={handleSendAlert} disabled={sendingAlert}
+                className="flex-1 flex items-center justify-center gap-2 bg-mj-red text-white font-body font-bold py-3 rounded-xl hover:bg-mj-red-dark transition-colors text-sm disabled:opacity-60">
+                {sendingAlert ? <><Loader2 size={15} className="animate-spin" /> Mengirim...</> : <><Send size={15} /> Kirim Alert</>}
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
@@ -293,6 +410,10 @@ export default function DashboardAdmin() {
           </div>
           <div className="flex items-center gap-3">
             <p className="font-display font-bold text-white text-base tracking-wider hidden md:block">{time}</p>
+            <button onClick={() => { setShowAlertModal(true); fetchPetugas(); }}
+              className="flex items-center gap-1.5 bg-mj-red hover:bg-mj-red-dark text-white text-xs font-body font-semibold px-3 py-2 rounded-xl transition-colors">
+              <BellRing size={13} /> Alert Petugas
+            </button>
             <button onClick={handleLogout} className="flex items-center gap-1.5 bg-white/10 hover:bg-mj-red text-white text-xs font-body font-semibold px-3 py-2 rounded-xl transition-colors">
               <LogOut size={13} /> Keluar
             </button>
@@ -463,7 +584,7 @@ export default function DashboardAdmin() {
             {/* Search */}
             <div className="relative">
               <Search size={15} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-400" />
-              <input type="text" placeholder="Cari nama atau NIP petugas..." value={search} onChange={e => setSearch(e.target.value)}
+              <input type="text" placeholder="Cari nama petugas..." value={search} onChange={e => setSearch(e.target.value)}
                 className="w-full pl-10 pr-4 py-3 border border-gray-200 rounded-xl font-body text-sm focus:outline-none focus:ring-2 focus:ring-mj-blue/20" />
             </div>
 
@@ -496,7 +617,7 @@ export default function DashboardAdmin() {
                         </div>
                         <div className="min-w-0">
                           <p className="font-body font-bold text-mj-blue text-sm truncate">{a.petugas?.nama}</p>
-                          <p className="text-mj-blue/40 text-xs">{a.petugas?.nip}</p>
+                          <p className="text-mj-blue/40 text-xs">{a.petugas?.kelurahan}</p>
                         </div>
                       </div>
                       {/* Tanggal (bulanan mode only) */}
@@ -687,7 +808,6 @@ export default function DashboardAdmin() {
                 <div className="grid sm:grid-cols-2 gap-4">
                   {[
                     { label: 'Nama Lengkap', key: 'nama', type: 'text', placeholder: 'Budi Santoso' },
-                    { label: 'NIP', key: 'nip', type: 'text', placeholder: '198501012010011001' },
                     { label: 'Nomor HP', key: 'nomor_hp', type: 'tel', placeholder: '0812xxxx' },
                     { label: 'Username (untuk login)', key: 'username', type: 'text', placeholder: 'budi.santoso' },
                     { label: 'Password', key: 'password', type: 'password', placeholder: '••••••••' },
@@ -732,7 +852,7 @@ export default function DashboardAdmin() {
 
             <div className="relative">
               <Search size={15} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-400" />
-              <input type="text" placeholder="Cari nama atau NIP..." value={search} onChange={e => setSearch(e.target.value)}
+              <input type="text" placeholder="Cari nama atau username..." value={search} onChange={e => setSearch(e.target.value)}
                 className="w-full pl-10 pr-4 py-3 border border-gray-200 rounded-xl font-body text-sm focus:outline-none focus:ring-2 focus:ring-mj-blue/20" />
             </div>
 
@@ -747,7 +867,7 @@ export default function DashboardAdmin() {
                     </div>
                     <div className="flex-1 min-w-0">
                       <p className="font-body font-bold text-mj-blue text-sm">{p.nama}</p>
-                      <p className="text-mj-blue/40 text-xs font-body">{p.nip} · @{p.username} · {p.kelurahan}</p>
+                      <p className="text-mj-blue/40 text-xs font-body">@{p.username} · {p.kelurahan}</p>
                     </div>
                     {p.nomor_hp && (
                       <a href={`tel:${p.nomor_hp}`} className="flex items-center gap-1 text-xs text-mj-blue/50 hover:text-mj-blue font-body">

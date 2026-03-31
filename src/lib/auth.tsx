@@ -5,7 +5,6 @@ import { supabase } from './supabase';
 export interface UserSession {
   id: string;
   nama: string;
-  nip: string;
   username: string;
   role: 'petugas' | 'admin';
   unit: string;
@@ -57,12 +56,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const session: UserSession = {
         id: data.id,
         nama: data.nama,
-        nip: data.nip,
         username: data.username,
         role: data.role,
         unit: data.unit,
         kelurahan: data.kelurahan,
-        nomor_hp: data.nomor_hp,
+        nomor_hp: data.nomor_hp || '',
         foto_profil: data.foto_profil,
       };
 

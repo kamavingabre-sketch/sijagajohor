@@ -7,6 +7,7 @@ import {
   LogOut, MapPin, Camera, Clock, CheckCircle, AlertTriangle,
   Loader2, Navigation, WifiOff, Upload, X, HardHat, Zap,
   ClipboardCheck, ImageIcon, Info, Image, PenLine, Trash2,
+  BellRing,
 } from 'lucide-react';
 
 interface AbsensiToday {
@@ -16,6 +17,10 @@ interface AbsensiToday {
 interface Coords { lat: number; lng: number; acc: number; }
 interface FotoKegiatan {
   id: string; url: string; deskripsi: string; uploaded_at: string;
+}
+interface AlertNotif {
+  id: string; judul: string; deskripsi: string;
+  target_type: 'personal' | 'mass'; created_at: string;
 }
 
 export default function DashboardPetugas() {
@@ -35,6 +40,10 @@ export default function DashboardPetugas() {
   const [absenKeluarLoading, setAbsenKeluarLoading] = useState(false);
   const [toast, setToast] = useState<{ msg: string; type: 'ok' | 'err' } | null>(null);
   const [time, setTime] = useState('');
+
+  // Alert popup state
+  const [activeAlert, setActiveAlert] = useState<AlertNotif | null>(null);
+  const alertAudioRef = useRef<AudioContext | null>(null);
 
   // Foto Kegiatan states
   const [fotoKegiatanList, setFotoKegiatanList] = useState<FotoKegiatan[]>([]);
@@ -64,6 +73,62 @@ export default function DashboardPetugas() {
     if (user.role !== 'petugas') { router.push('/dashboard-admin'); return; }
     fetchAbsensiHari();
     fetchFotoKegiatan();
+  }, [user]);
+
+  // ── Realtime alert listener ──
+  useEffect(() => {
+    if (!user) return;
+
+    const playAlertSound = () => {
+      try {
+        const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
+        const beep = (freq: number, start: number, dur: number) => {
+          const osc = ctx.createOscillator();
+          const gain = ctx.createGain();
+          osc.connect(gain);
+          gain.connect(ctx.destination);
+          osc.frequency.value = freq;
+          osc.type = 'sine';
+          gain.gain.setValueAtTime(0, ctx.currentTime + start);
+          gain.gain.linearRampToValueAtTime(0.5, ctx.currentTime + start + 0.02);
+          gain.gain.linearRampToValueAtTime(0, ctx.currentTime + start + dur);
+          osc.start(ctx.currentTime + start);
+          osc.stop(ctx.currentTime + start + dur + 0.05);
+        };
+        // Pattern: beep-beep-pause-beep
+        beep(880, 0, 0.15);
+        beep(880, 0.2, 0.15);
+        beep(1100, 0.5, 0.3);
+        beep(880, 0.85, 0.15);
+        beep(880, 1.05, 0.15);
+        beep(1100, 1.35, 0.3);
+      } catch {}
+    };
+
+    const channel = supabase
+      .channel('alerts-petugas-' + user.id)
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'alerts' },
+        (payload: any) => {
+          const alert = payload.new;
+          const isForMe =
+            alert.target_type === 'mass' ||
+            (alert.target_type === 'personal' && alert.target_petugas_id === user.id);
+          if (!isForMe) return;
+          setActiveAlert({
+            id: alert.id,
+            judul: alert.judul || 'Alert dari Admin',
+            deskripsi: alert.deskripsi,
+            target_type: alert.target_type,
+            created_at: alert.created_at,
+          });
+          playAlertSound();
+        }
+      )
+      .subscribe();
+
+    return () => { supabase.removeChannel(channel); };
   }, [user]);
 
   const showToast = (msg: string, type: 'ok' | 'err' = 'ok') => {
@@ -276,7 +341,7 @@ export default function DashboardPetugas() {
             <div>
               <p className="text-white/50 text-xs font-body font-semibold uppercase tracking-widest mb-1">Selamat Datang</p>
               <p className="font-display font-black text-2xl uppercase tracking-wide">{user.nama}</p>
-              <p className="text-white/60 text-sm font-body mt-0.5">NIP: {user.nip}</p>
+              <p className="text-white/60 text-sm font-body mt-0.5">HP: {user.nomor_hp || '-'}</p>
               <div className="flex items-center gap-2 mt-3">
                 <span className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wide ${
                   user.unit === 'melati' ? 'bg-emerald-500/20 text-emerald-300' : 'bg-orange-500/20 text-orange-300'
@@ -533,6 +598,49 @@ export default function DashboardPetugas() {
         </div>
 
       </div>
+
+      {/* ══ ALERT POPUP NOTIFIKASI ══ */}
+      {activeAlert && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm animate-in fade-in duration-200">
+          <div className="w-full max-w-sm bg-white rounded-2xl shadow-2xl overflow-hidden">
+            {/* Red pulsing header */}
+            <div className="bg-mj-red px-5 py-4 flex items-center gap-3 relative overflow-hidden">
+              <div className="absolute inset-0 bg-white/10 animate-pulse" />
+              <div className="relative w-12 h-12 bg-white/20 rounded-xl flex items-center justify-center shrink-0">
+                <BellRing size={24} className="text-white animate-bounce" />
+              </div>
+              <div className="relative flex-1">
+                <p className="font-body text-white/80 text-xs font-semibold uppercase tracking-widest mb-0.5">
+                  {activeAlert.target_type === 'mass' ? '🔴 MASS ALERT' : '🔔 PERINGATAN'}
+                </p>
+                <p className="font-display font-black text-white text-lg uppercase tracking-wide leading-tight">
+                  {activeAlert.judul}
+                </p>
+              </div>
+            </div>
+
+            {/* Body */}
+            <div className="px-5 py-5">
+              <p className="font-body text-mj-blue text-sm leading-relaxed">{activeAlert.deskripsi}</p>
+              <p className="text-gray-400 text-xs font-body mt-3">
+                {new Date(activeAlert.created_at).toLocaleString('id-ID', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}
+              </p>
+            </div>
+
+            {/* Acknowledge button */}
+            <div className="px-5 pb-5">
+              <button
+                onClick={async () => {
+                  await supabase.from('alerts').update({ dibaca: true }).eq('id', activeAlert.id);
+                  setActiveAlert(null);
+                }}
+                className="w-full bg-mj-blue text-white font-body font-bold py-3.5 rounded-xl hover:bg-mj-blue-mid transition-colors text-sm flex items-center justify-center gap-2">
+                <CheckCircle size={16} /> Saya Mengerti
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
