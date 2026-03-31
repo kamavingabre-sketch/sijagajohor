@@ -106,3 +106,26 @@ VALUES (
   'admin',
   '081234567890'
 ) ON CONFLICT (username) DO NOTHING;
+
+-- ============================================================
+-- TAMBAHAN: Tabel foto_kegiatan (dokumentasi kegiatan harian)
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS foto_kegiatan (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  petugas_id UUID REFERENCES petugas(id) ON DELETE CASCADE,
+  url TEXT NOT NULL,
+  deskripsi TEXT NOT NULL,
+  uploaded_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_foto_kegiatan_petugas ON foto_kegiatan(petugas_id);
+CREATE INDEX IF NOT EXISTS idx_foto_kegiatan_time ON foto_kegiatan(uploaded_at DESC);
+
+ALTER TABLE foto_kegiatan ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "allow_all_read"   ON foto_kegiatan FOR SELECT USING (true);
+CREATE POLICY "allow_all_insert" ON foto_kegiatan FOR INSERT WITH CHECK (true);
+CREATE POLICY "allow_all_delete" ON foto_kegiatan FOR DELETE USING (true);
+
+-- Enable realtime untuk foto_kegiatan (opsional)
+-- ALTER PUBLICATION supabase_realtime ADD TABLE foto_kegiatan;

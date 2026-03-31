@@ -6,18 +6,17 @@ import { supabase } from '@/lib/supabase';
 import {
   LogOut, MapPin, Camera, Clock, CheckCircle, AlertTriangle,
   Loader2, Navigation, WifiOff, Upload, X, HardHat, Zap,
-  ClipboardCheck, ImageIcon, Info
+  ClipboardCheck, ImageIcon, Info, Image, PenLine, Trash2,
 } from 'lucide-react';
 
 interface AbsensiToday {
-  id: string;
-  jam_masuk: string | null;
-  jam_keluar: string | null;
-  foto_bukti_url: string | null;
-  status: string;
+  id: string; jam_masuk: string | null; jam_keluar: string | null;
+  foto_bukti_url: string | null; status: string;
 }
-
 interface Coords { lat: number; lng: number; acc: number; }
+interface FotoKegiatan {
+  id: string; url: string; deskripsi: string; uploaded_at: string;
+}
 
 export default function DashboardPetugas() {
   const router = useRouter();
@@ -37,11 +36,19 @@ export default function DashboardPetugas() {
   const [toast, setToast] = useState<{ msg: string; type: 'ok' | 'err' } | null>(null);
   const [time, setTime] = useState('');
 
+  // Foto Kegiatan states
+  const [fotoKegiatanList, setFotoKegiatanList] = useState<FotoKegiatan[]>([]);
+  const [fotoKegiatanPreview, setFotoKegiatanPreview] = useState<string | null>(null);
+  const [fotoKegiatanFile, setFotoKegiatanFile] = useState<File | null>(null);
+  const [deskripsiKegiatan, setDeskripsiKegiatan] = useState('');
+  const [uploadingKegiatan, setUploadingKegiatan] = useState(false);
+  const [loadingKegiatan, setLoadingKegiatan] = useState(false);
+
   const watchIdRef = useRef<number | null>(null);
   const trackIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const fileKegiatanRef = useRef<HTMLInputElement>(null);
 
-  // Clock
   useEffect(() => {
     const tick = () => {
       const now = new Date();
@@ -52,11 +59,11 @@ export default function DashboardPetugas() {
     return () => clearInterval(t);
   }, []);
 
-  // Auth guard
   useEffect(() => {
     if (!user) { router.push('/login'); return; }
     if (user.role !== 'petugas') { router.push('/dashboard-admin'); return; }
     fetchAbsensiHari();
+    fetchFotoKegiatan();
   }, [user]);
 
   const showToast = (msg: string, type: 'ok' | 'err' = 'ok') => {
@@ -64,37 +71,38 @@ export default function DashboardPetugas() {
     setTimeout(() => setToast(null), 4000);
   };
 
-  // Fetch absensi hari ini
   const fetchAbsensiHari = async () => {
     if (!user) return;
     setLoadingAbsensi(true);
     const today = new Date().toISOString().split('T')[0];
-    const { data } = await supabase
-      .from('absensi')
-      .select('*')
-      .eq('petugas_id', user.id)
-      .eq('tanggal', today)
-      .single();
+    const { data } = await supabase.from('absensi').select('*')
+      .eq('petugas_id', user.id).eq('tanggal', today).single();
     setAbsensi(data || null);
     setLoadingAbsensi(false);
   };
 
-  // Start GPS tracking
+  const fetchFotoKegiatan = async () => {
+    if (!user) return;
+    setLoadingKegiatan(true);
+    const { data } = await supabase.from('foto_kegiatan').select('*')
+      .eq('petugas_id', user.id)
+      .order('uploaded_at', { ascending: false })
+      .limit(20);
+    setFotoKegiatanList(data || []);
+    setLoadingKegiatan(false);
+  };
+
   const startGPS = useCallback(() => {
-    if (!navigator.geolocation) {
-      setGpsError('Browser tidak mendukung GPS');
-      return;
-    }
+    if (!navigator.geolocation) { setGpsError('Browser tidak mendukung GPS'); return; }
     setGpsError('');
     watchIdRef.current = navigator.geolocation.watchPosition(
       (pos) => {
         setCoords({ lat: pos.coords.latitude, lng: pos.coords.longitude, acc: pos.coords.accuracy });
-        setGpsActive(true);
-        setGpsError('');
+        setGpsActive(true); setGpsError('');
       },
       (err) => {
         setGpsActive(false);
-        if (err.code === 1) setGpsError('Izin GPS ditolak. Aktifkan GPS di pengaturan browser.');
+        if (err.code === 1) setGpsError('Izin GPS ditolak.');
         else if (err.code === 2) setGpsError('Sinyal GPS tidak tersedia.');
         else setGpsError('GPS timeout. Pastikan GPS aktif.');
       },
@@ -103,64 +111,36 @@ export default function DashboardPetugas() {
   }, []);
 
   const stopGPS = useCallback(() => {
-    if (watchIdRef.current !== null) {
-      navigator.geolocation.clearWatch(watchIdRef.current);
-      watchIdRef.current = null;
-    }
-    setGpsActive(false);
-    setTracking(false);
+    if (watchIdRef.current !== null) { navigator.geolocation.clearWatch(watchIdRef.current); watchIdRef.current = null; }
+    setGpsActive(false); setTracking(false);
     if (trackIntervalRef.current) clearInterval(trackIntervalRef.current);
   }, []);
 
-  // Send location to Supabase every 30s
   const startTracking = useCallback(() => {
     if (!user || !coords) return;
     setTracking(true);
     const sendLoc = async () => {
       if (!coords) return;
-      await supabase.from('lokasi_petugas').insert({
-        petugas_id: user.id,
-        latitude: coords.lat,
-        longitude: coords.lng,
-        akurasi: coords.acc,
-      });
+      await supabase.from('lokasi_petugas').insert({ petugas_id: user.id, latitude: coords.lat, longitude: coords.lng, akurasi: coords.acc });
     };
     sendLoc();
     trackIntervalRef.current = setInterval(sendLoc, 30000);
   }, [user, coords]);
 
-  useEffect(() => {
-    startGPS();
-    return () => { stopGPS(); };
-  }, []);
+  useEffect(() => { startGPS(); return () => { stopGPS(); }; }, []);
 
-  useEffect(() => {
-    if (coords && tracking) {
-      // coords updated, send immediately on first tracking start
-    }
-  }, [coords]);
-
-  // Absen masuk
   const handleAbsenMasuk = async () => {
     if (!user || !coords) { showToast('GPS harus aktif sebelum absen masuk!', 'err'); return; }
     setAbsenMasukLoading(true);
     const today = new Date().toISOString().split('T')[0];
     const { data, error } = await supabase.from('absensi').insert({
-      petugas_id: user.id,
-      tanggal: today,
-      jam_masuk: new Date().toISOString(),
-      status: 'hadir',
+      petugas_id: user.id, tanggal: today, jam_masuk: new Date().toISOString(), status: 'hadir',
     }).select().single();
     if (error) { showToast('Gagal absen masuk: ' + error.message, 'err'); }
-    else {
-      setAbsensi(data);
-      startTracking();
-      showToast('Absen masuk berhasil! GPS tracking dimulai.', 'ok');
-    }
+    else { setAbsensi(data); startTracking(); showToast('Absen masuk berhasil! GPS tracking dimulai.', 'ok'); }
     setAbsenMasukLoading(false);
   };
 
-  // Upload foto bukti
   const handleFotoChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -176,44 +156,58 @@ export default function DashboardPetugas() {
     setUploadingFoto(true);
     try {
       const fileName = `${user.id}/${absensi.id}_${Date.now()}.jpg`;
-      const { error: uploadErr } = await supabase.storage
-        .from('foto-bukti')
-        .upload(fileName, fotoFile, { contentType: fotoFile.type, upsert: true });
+      const { error: uploadErr } = await supabase.storage.from('foto-bukti').upload(fileName, fotoFile, { contentType: fotoFile.type, upsert: true });
       if (uploadErr) throw uploadErr;
       const { data: urlData } = supabase.storage.from('foto-bukti').getPublicUrl(fileName);
       const fotoUrl = urlData.publicUrl;
-      await supabase.from('foto_bukti').insert({
-        petugas_id: user.id, absensi_id: absensi.id,
-        url: fotoUrl, latitude: coords?.lat, longitude: coords?.lng,
-        keterangan: 'Bukti tugas kebersihan',
-      });
+      await supabase.from('foto_bukti').insert({ petugas_id: user.id, absensi_id: absensi.id, url: fotoUrl, latitude: coords?.lat, longitude: coords?.lng, keterangan: 'Bukti tugas kebersihan' });
       await supabase.from('absensi').update({ foto_bukti_url: fotoUrl }).eq('id', absensi.id);
       setAbsensi({ ...absensi, foto_bukti_url: fotoUrl });
       setFotoPreview(null); setFotoFile(null);
       showToast('Foto bukti berhasil dikirim!', 'ok');
-    } catch (err: any) {
-      showToast('Gagal upload foto: ' + err.message, 'err');
-    }
+    } catch (err: any) { showToast('Gagal upload foto: ' + err.message, 'err'); }
     setUploadingFoto(false);
   };
 
-  // Absen keluar
+  const handleFotoKegiatanChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (file.size > 10 * 1024 * 1024) { showToast('Ukuran foto max 10MB', 'err'); return; }
+    setFotoKegiatanFile(file);
+    const reader = new FileReader();
+    reader.onload = ev => setFotoKegiatanPreview(ev.target?.result as string);
+    reader.readAsDataURL(file);
+  };
+
+  const handleUploadFotoKegiatan = async () => {
+    if (!fotoKegiatanFile || !user) return;
+    if (!deskripsiKegiatan.trim()) { showToast('Deskripsi kegiatan wajib diisi!', 'err'); return; }
+    setUploadingKegiatan(true);
+    try {
+      const fileName = `kegiatan/${user.id}/${Date.now()}.jpg`;
+      const { error: uploadErr } = await supabase.storage.from('foto-bukti').upload(fileName, fotoKegiatanFile, { contentType: fotoKegiatanFile.type, upsert: false });
+      if (uploadErr) throw uploadErr;
+      const { data: urlData } = supabase.storage.from('foto-bukti').getPublicUrl(fileName);
+      const fotoUrl = urlData.publicUrl;
+      const { error: insertErr } = await supabase.from('foto_kegiatan').insert({
+        petugas_id: user.id, url: fotoUrl, deskripsi: deskripsiKegiatan.trim(),
+      });
+      if (insertErr) throw insertErr;
+      setFotoKegiatanPreview(null); setFotoKegiatanFile(null); setDeskripsiKegiatan('');
+      if (fileKegiatanRef.current) fileKegiatanRef.current.value = '';
+      showToast('Foto kegiatan berhasil dikirim!', 'ok');
+      fetchFotoKegiatan();
+    } catch (err: any) { showToast('Gagal upload foto kegiatan: ' + err.message, 'err'); }
+    setUploadingKegiatan(false);
+  };
+
   const handleAbsenKeluar = async () => {
     if (!absensi) return;
-    if (!absensi.foto_bukti_url) {
-      showToast('Wajib upload foto bukti tugas sebelum absen keluar!', 'err');
-      return;
-    }
+    if (!absensi.foto_bukti_url) { showToast('Wajib upload foto bukti tugas sebelum absen keluar!', 'err'); return; }
     setAbsenKeluarLoading(true);
-    const { data, error } = await supabase.from('absensi')
-      .update({ jam_keluar: new Date().toISOString() })
-      .eq('id', absensi.id).select().single();
+    const { data, error } = await supabase.from('absensi').update({ jam_keluar: new Date().toISOString() }).eq('id', absensi.id).select().single();
     if (error) { showToast('Gagal absen keluar: ' + error.message, 'err'); }
-    else {
-      setAbsensi(data);
-      stopGPS();
-      showToast('Absen keluar berhasil! Terima kasih sudah bertugas.', 'ok');
-    }
+    else { setAbsensi(data); stopGPS(); showToast('Absen keluar berhasil! Terima kasih sudah bertugas.', 'ok'); }
     setAbsenKeluarLoading(false);
   };
 
@@ -223,6 +217,8 @@ export default function DashboardPetugas() {
     if (!iso) return '—';
     return new Date(iso).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' });
   };
+  const formatUploadTime = (iso: string) =>
+    new Date(iso).toLocaleString('id-ID', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
 
   if (!user) return null;
 
@@ -232,8 +228,6 @@ export default function DashboardPetugas() {
 
   return (
     <div className="min-h-screen bg-mj-cream">
-
-      {/* Toast */}
       {toast && (
         <div className={`fixed top-4 right-4 z-50 flex items-center gap-3 px-5 py-3.5 rounded-xl shadow-2xl font-body text-sm font-semibold transition-all ${
           toast.type === 'ok' ? 'bg-emerald-600 text-white' : 'bg-mj-red text-white'
@@ -262,13 +256,11 @@ export default function DashboardPetugas() {
                 {new Date().toLocaleDateString('id-ID', { weekday: 'long', day: 'numeric', month: 'long' })}
               </p>
             </div>
-            <button onClick={handleLogout}
-              className="w-9 h-9 bg-white/10 hover:bg-mj-red rounded-xl flex items-center justify-center transition-colors">
+            <button onClick={handleLogout} className="w-9 h-9 bg-white/10 hover:bg-mj-red rounded-xl flex items-center justify-center transition-colors">
               <LogOut size={16} className="text-white" />
             </button>
           </div>
         </div>
-        {/* Progress bar */}
         <div className="bg-white/10 h-1">
           <div className={`h-full bg-mj-red transition-all duration-700 ${sudahKeluar ? 'w-full' : sudahFoto ? 'w-3/4' : sudahMasuk ? 'w-1/2' : 'w-1/4'}`} />
         </div>
@@ -279,9 +271,7 @@ export default function DashboardPetugas() {
         {/* PROFIL CARD */}
         <div className="bg-mj-blue rounded-2xl p-5 text-white relative overflow-hidden">
           <div className="absolute -top-8 -right-8 w-32 h-32 rounded-full border border-white/10 pointer-events-none" />
-          <div className="absolute bottom-0 right-4 text-white/5 text-8xl font-display font-black pointer-events-none">
-            {user.unit.toUpperCase()}
-          </div>
+          <div className="absolute bottom-0 right-4 text-white/5 text-8xl font-display font-black pointer-events-none">{user.unit.toUpperCase()}</div>
           <div className="relative z-10 flex items-start justify-between">
             <div>
               <p className="text-white/50 text-xs font-body font-semibold uppercase tracking-widest mb-1">Selamat Datang</p>
@@ -291,8 +281,7 @@ export default function DashboardPetugas() {
                 <span className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wide ${
                   user.unit === 'melati' ? 'bg-emerald-500/20 text-emerald-300' : 'bg-orange-500/20 text-orange-300'
                 }`}>
-                  <span className="w-1.5 h-1.5 rounded-full bg-current" />
-                  {user.unit}
+                  <span className="w-1.5 h-1.5 rounded-full bg-current" />{user.unit}
                 </span>
                 <span className="inline-flex items-center gap-1 px-3 py-1 bg-white/10 rounded-full text-xs font-body text-white/70">
                   <MapPin size={10} /> {user.kelurahan}
@@ -313,9 +302,7 @@ export default function DashboardPetugas() {
             ].map((s, i) => {
               const Icon = s.icon;
               return (
-                <div key={i} className={`rounded-xl p-3 border text-center transition-all ${
-                  s.done ? 'bg-emerald-50 border-emerald-200' : 'bg-gray-50 border-gray-200'
-                }`}>
+                <div key={i} className={`rounded-xl p-3 border text-center transition-all ${s.done ? 'bg-emerald-50 border-emerald-200' : 'bg-gray-50 border-gray-200'}`}>
                   <Icon size={18} className={`mx-auto mb-1.5 ${s.done ? 'text-emerald-500' : 'text-gray-300'}`} />
                   <p className={`text-xs font-body font-semibold mb-0.5 ${s.done ? 'text-emerald-700' : 'text-gray-400'}`}>{s.label}</p>
                   <p className={`text-xs font-body ${s.done ? 'text-emerald-600' : 'text-gray-300'}`}>{s.val}</p>
@@ -326,9 +313,7 @@ export default function DashboardPetugas() {
         </div>
 
         {/* GPS STATUS */}
-        <div className={`rounded-2xl p-4 border flex items-center justify-between ${
-          gpsActive ? 'bg-emerald-50 border-emerald-200' : 'bg-red-50 border-red-200'
-        }`}>
+        <div className={`rounded-2xl p-4 border flex items-center justify-between ${gpsActive ? 'bg-emerald-50 border-emerald-200' : 'bg-red-50 border-red-200'}`}>
           <div className="flex items-center gap-3">
             <div className={`w-10 h-10 rounded-xl flex items-center justify-center ${gpsActive ? 'bg-emerald-500' : 'bg-mj-red'}`}>
               {gpsActive ? <Navigation size={18} className="text-white" /> : <WifiOff size={18} className="text-white" />}
@@ -338,18 +323,13 @@ export default function DashboardPetugas() {
                 {gpsActive ? 'GPS Aktif' : 'GPS Tidak Aktif'}
               </p>
               {gpsActive && coords && (
-                <p className="text-emerald-600 text-xs font-body font-mono">
-                  {coords.lat.toFixed(5)}, {coords.lng.toFixed(5)} ±{Math.round(coords.acc)}m
-                </p>
+                <p className="text-emerald-600 text-xs font-body font-mono">{coords.lat.toFixed(5)}, {coords.lng.toFixed(5)} ±{Math.round(coords.acc)}m</p>
               )}
               {gpsError && <p className="text-red-600 text-xs font-body">{gpsError}</p>}
             </div>
           </div>
           {!gpsActive && (
-            <button onClick={startGPS}
-              className="bg-mj-red text-white text-xs font-body font-bold px-3 py-2 rounded-lg hover:bg-mj-red-dark transition-colors">
-              Aktifkan
-            </button>
+            <button onClick={startGPS} className="bg-mj-red text-white text-xs font-body font-bold px-3 py-2 rounded-lg hover:bg-mj-red-dark transition-colors">Aktifkan</button>
           )}
           {gpsActive && (
             <div className="flex items-center gap-1.5">
@@ -399,26 +379,18 @@ export default function DashboardPetugas() {
               </div>
               {sudahFoto && <CheckCircle size={20} className="text-emerald-500 ml-auto shrink-0 mt-1" />}
             </div>
-
-            {/* Preview */}
             {fotoPreview && (
               <div className="relative mb-3">
                 <img src={fotoPreview} alt="preview" className="w-full h-48 object-cover rounded-xl border border-gray-100" />
-                <button onClick={() => { setFotoPreview(null); setFotoFile(null); }}
-                  className="absolute top-2 right-2 w-7 h-7 bg-black/60 rounded-full flex items-center justify-center">
+                <button onClick={() => { setFotoPreview(null); setFotoFile(null); }} className="absolute top-2 right-2 w-7 h-7 bg-black/60 rounded-full flex items-center justify-center">
                   <X size={13} className="text-white" />
                 </button>
               </div>
             )}
-
-            {/* Foto existing */}
             {sudahFoto && absensi?.foto_bukti_url && !fotoPreview && (
               <img src={absensi.foto_bukti_url} alt="bukti" className="w-full h-40 object-cover rounded-xl border border-emerald-100 mb-3" />
             )}
-
-            <input ref={fileInputRef} type="file" accept="image/*" capture="environment"
-              onChange={handleFotoChange} className="hidden" />
-
+            <input ref={fileInputRef} type="file" accept="image/*" capture="environment" onChange={handleFotoChange} className="hidden" />
             <div className="flex gap-2">
               <button onClick={() => fileInputRef.current?.click()}
                 className="flex-1 flex items-center justify-center gap-2 border-2 border-dashed border-gray-300 hover:border-mj-blue text-mj-blue/60 hover:text-mj-blue font-body font-semibold text-sm py-3 rounded-xl transition-all">
@@ -444,7 +416,7 @@ export default function DashboardPetugas() {
               <div>
                 <p className="font-display font-bold text-mj-blue uppercase tracking-wide">Absen Keluar</p>
                 <p className="text-mj-blue/50 text-xs font-body mt-0.5">
-                  {sudahFoto ? 'Foto bukti sudah ada, siap absen keluar' : 'Upload foto bukti dahulu sebelum absen keluar'}
+                  {sudahFoto ? 'Foto bukti sudah ada, siap absen keluar' : 'Upload foto bukti dahulu'}
                 </p>
               </div>
             </div>
@@ -473,12 +445,93 @@ export default function DashboardPetugas() {
           </div>
         )}
 
-        {/* Loading state */}
         {loadingAbsensi && (
-          <div className="flex justify-center py-8">
-            <Loader2 size={28} className="animate-spin text-mj-blue/40" />
-          </div>
+          <div className="flex justify-center py-8"><Loader2 size={28} className="animate-spin text-mj-blue/40" /></div>
         )}
+
+        {/* ══ FOTO KEGIATAN HARIAN ══ */}
+        <div className="bg-white rounded-2xl border border-blue-50 shadow-sm overflow-hidden">
+          {/* Header */}
+          <div className="flex items-center gap-3 p-5 border-b border-gray-50">
+            <div className="w-10 h-10 bg-violet-100 rounded-xl flex items-center justify-center shrink-0">
+              <Image size={18} className="text-violet-600" />
+            </div>
+            <div>
+              <p className="font-display font-bold text-mj-blue uppercase tracking-wide">Foto Kegiatan Harian</p>
+              <p className="text-mj-blue/50 text-xs font-body mt-0.5">Dokumentasi kegiatan kerja dengan deskripsi</p>
+            </div>
+          </div>
+
+          {/* Form upload */}
+          <div className="p-5 space-y-3">
+            {/* Preview */}
+            {fotoKegiatanPreview && (
+              <div className="relative">
+                <img src={fotoKegiatanPreview} alt="preview kegiatan" className="w-full h-52 object-cover rounded-xl border border-gray-100" />
+                <button onClick={() => { setFotoKegiatanPreview(null); setFotoKegiatanFile(null); if (fileKegiatanRef.current) fileKegiatanRef.current.value = ''; }}
+                  className="absolute top-2 right-2 w-7 h-7 bg-black/60 rounded-full flex items-center justify-center">
+                  <X size={13} className="text-white" />
+                </button>
+              </div>
+            )}
+
+            {/* File input trigger */}
+            <input ref={fileKegiatanRef} type="file" accept="image/*" capture="environment" onChange={handleFotoKegiatanChange} className="hidden" />
+            <button onClick={() => fileKegiatanRef.current?.click()}
+              className={`w-full flex items-center justify-center gap-2 border-2 border-dashed font-body font-semibold text-sm py-3 rounded-xl transition-all ${
+                fotoKegiatanPreview
+                  ? 'border-violet-300 text-violet-600 hover:border-violet-500'
+                  : 'border-gray-300 text-gray-500 hover:border-violet-400 hover:text-violet-600'
+              }`}>
+              <Camera size={16} /> {fotoKegiatanPreview ? 'Ganti Foto Kegiatan' : 'Ambil / Pilih Foto Kegiatan'}
+            </button>
+
+            {/* Deskripsi */}
+            <div>
+              <label className="block font-body font-semibold text-mj-blue text-xs mb-1.5 uppercase tracking-wide">
+                <PenLine size={12} className="inline mr-1" /> Deskripsi Kegiatan
+              </label>
+              <textarea
+                value={deskripsiKegiatan}
+                onChange={e => setDeskripsiKegiatan(e.target.value)}
+                placeholder="Contoh: Pembersihan selokan di Jl. Sei Sikambing, pengangkutan sampah organik dari 12 rumah..."
+                rows={3}
+                className="w-full border border-gray-200 rounded-xl px-4 py-3 font-body text-sm text-mj-blue placeholder-gray-300 focus:outline-none focus:ring-2 focus:ring-violet-400/30 focus:border-violet-400 resize-none transition-all"
+              />
+            </div>
+
+            {/* Submit button */}
+            <button
+              onClick={handleUploadFotoKegiatan}
+              disabled={uploadingKegiatan || !fotoKegiatanFile || !deskripsiKegiatan.trim()}
+              className="w-full flex items-center justify-center gap-2 bg-violet-600 hover:bg-violet-700 text-white font-body font-bold py-3.5 rounded-xl transition-all disabled:opacity-40 disabled:cursor-not-allowed shadow-md shadow-violet-900/15">
+              {uploadingKegiatan ? <><Loader2 size={16} className="animate-spin" /> Mengirim...</> : <><Upload size={16} /> Kirim Foto Kegiatan</>}
+            </button>
+          </div>
+
+          {/* List foto kegiatan */}
+          {loadingKegiatan ? (
+            <div className="flex justify-center py-6 px-5"><Loader2 size={22} className="animate-spin text-violet-400" /></div>
+          ) : fotoKegiatanList.length === 0 ? (
+            <div className="px-5 pb-5 text-center">
+              <p className="text-gray-300 text-sm font-body">Belum ada foto kegiatan yang dikirim.</p>
+            </div>
+          ) : (
+            <div className="px-5 pb-5 space-y-3">
+              <p className="font-body font-semibold text-mj-blue/50 text-xs uppercase tracking-wide">Riwayat Foto Kegiatan</p>
+              {fotoKegiatanList.map((foto) => (
+                <div key={foto.id} className="flex gap-3 bg-gray-50 rounded-xl p-3 border border-gray-100">
+                  <img src={foto.url} alt="kegiatan" className="w-20 h-20 object-cover rounded-lg shrink-0 border border-gray-200" />
+                  <div className="flex-1 min-w-0">
+                    <p className="font-body text-mj-blue text-sm leading-snug line-clamp-3">{foto.deskripsi}</p>
+                    <p className="text-gray-400 text-xs font-body mt-1.5">{formatUploadTime(foto.uploaded_at)}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
       </div>
     </div>
   );

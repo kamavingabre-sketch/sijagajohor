@@ -3,14 +3,22 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/lib/auth';
 import { supabase } from '@/lib/supabase';
+import dynamic from 'next/dynamic';
 import {
   LogOut, Shield, Users, MapPin, Camera, ClipboardList, UserPlus,
-  Eye, Clock, CheckCircle, XCircle, AlertTriangle, Loader2,
-  Navigation, RefreshCw, X, Search, Filter, ChevronDown,
-  Phone, Leaf, Truck, Calendar, Activity
+  Eye, CheckCircle, XCircle, AlertTriangle, Loader2,
+  Navigation, RefreshCw, X, Search, Phone, Leaf, Truck,
+  Download, Image, Calendar, ChevronDown, BarChart2,
 } from 'lucide-react';
 
-type Tab = 'peta' | 'absensi' | 'foto' | 'petugas';
+// Dynamic import untuk MapPetugas (no SSR — Leaflet butuh window)
+const MapPetugas = dynamic(() => import('@/components/admin/MapPetugas'), { ssr: false, loading: () => (
+  <div className="h-96 flex items-center justify-center bg-blue-50 rounded-xl">
+    <Loader2 size={28} className="animate-spin text-mj-blue/30" />
+  </div>
+)});
+
+type Tab = 'peta' | 'absensi' | 'foto' | 'galeri' | 'petugas';
 
 interface Petugas {
   id: string; nama: string; nip: string; unit: string;
@@ -33,6 +41,35 @@ interface FotoBukti {
   latitude: number | null; longitude: number | null; uploaded_at: string;
   petugas: { nama: string; unit: string };
 }
+interface FotoKegiatan {
+  id: string; petugas_id: string; url: string; deskripsi: string; uploaded_at: string;
+  petugas: { nama: string; unit: string; kelurahan: string };
+}
+
+// ── Excel export helper (XML format, terbuka di Excel) ──
+function exportToExcel(rows: Record<string, string>[], filename: string) {
+  if (rows.length === 0) return;
+  const headers = Object.keys(rows[0]);
+  const esc = (v: string) => String(v || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet"
+ xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet">
+ <Styles>
+  <Style ss:ID="h"><Font ss:Bold="1"/><Interior ss:Color="#1e3a5f" ss:Pattern="Solid"/><Font ss:Color="#FFFFFF" ss:Bold="1"/></Style>
+ </Styles>
+ <Worksheet ss:Name="Data Absensi">
+  <Table>
+   <Row>${headers.map(h => `<Cell ss:StyleID="h"><Data ss:Type="String">${esc(h)}</Data></Cell>`).join('')}</Row>
+   ${rows.map(r => `<Row>${headers.map(h => `<Cell><Data ss:Type="String">${esc(r[h])}</Data></Cell>`).join('')}</Row>`).join('\n')}
+  </Table>
+ </Worksheet>
+</Workbook>`;
+  const blob = new Blob([xml], { type: 'application/vnd.ms-excel;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename + '.xls'; a.click();
+  URL.revokeObjectURL(url);
+}
 
 export default function DashboardAdmin() {
   const router = useRouter();
@@ -41,58 +78,58 @@ export default function DashboardAdmin() {
   const [petugasList, setPetugasList] = useState<Petugas[]>([]);
   const [absensiList, setAbsensiList] = useState<Absensi[]>([]);
   const [fotoList, setFotoList] = useState<FotoBukti[]>([]);
+  const [fotoKegiatanList, setFotoKegiatanList] = useState<FotoKegiatan[]>([]);
   const [lokasiList, setLokasiList] = useState<LokasiFresh[]>([]);
   const [loadingMap, setLoadingMap] = useState(false);
   const [loadingAbsensi, setLoadingAbsensi] = useState(false);
   const [loadingFoto, setLoadingFoto] = useState(false);
+  const [loadingGaleri, setLoadingGaleri] = useState(false);
   const [loadingPetugas, setLoadingPetugas] = useState(false);
   const [search, setSearch] = useState('');
   const [selectedFoto, setSelectedFoto] = useState<string | null>(null);
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [toast, setToast] = useState<{ msg: string; type: 'ok' | 'err' } | null>(null);
   const [time, setTime] = useState('');
+
+  // Absensi: date OR month mode
+  const [absensiMode, setAbsensiMode] = useState<'harian' | 'bulanan'>('harian');
   const [absensiDate, setAbsensiDate] = useState(new Date().toISOString().split('T')[0]);
+  const [absensiMonth, setAbsensiMonth] = useState(() => {
+    const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
+  });
 
   // Create account form
-  const [form, setForm] = useState({
-    nama: '', nip: '', unit: 'melati', kelurahan: 'Kwala Bekala',
-    nomor_hp: '', username: '', password: '', role: 'petugas'
-  });
+  const [form, setForm] = useState({ nama:'', nip:'', unit:'melati', kelurahan:'Kwala Bekala', nomor_hp:'', username:'', password:'', role:'petugas' });
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState('');
 
-  // Clock
   useEffect(() => {
-    const tick = () => setTime(new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
+    const tick = () => setTime(new Date().toLocaleTimeString('id-ID', { hour:'2-digit', minute:'2-digit', second:'2-digit' }));
     tick();
     const t = setInterval(tick, 1000);
     return () => clearInterval(t);
   }, []);
 
-  // Auth guard
   useEffect(() => {
     if (!user) { router.push('/login'); return; }
     if (user.role !== 'admin') { router.push('/dashboard-petugas'); return; }
   }, [user]);
 
   const showToast = (msg: string, type: 'ok' | 'err' = 'ok') => {
-    setToast({ msg, type });
-    setTimeout(() => setToast(null), 4000);
+    setToast({ msg, type }); setTimeout(() => setToast(null), 4000);
   };
 
-  // Load data based on tab
   useEffect(() => {
     if (tab === 'peta') fetchLokasi();
     if (tab === 'absensi') fetchAbsensi();
     if (tab === 'foto') fetchFoto();
+    if (tab === 'galeri') fetchFotoKegiatan();
     if (tab === 'petugas') fetchPetugas();
-  }, [tab, absensiDate]);
+  }, [tab, absensiDate, absensiMonth, absensiMode]);
 
-  // Realtime subscription for lokasi
   useEffect(() => {
     const channel = supabase.channel('lokasi-realtime')
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'lokasi_petugas' },
-        () => { if (tab === 'peta') fetchLokasi(); })
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'lokasi_petugas' }, () => { if (tab === 'peta') fetchLokasi(); })
       .subscribe();
     return () => { supabase.removeChannel(channel); };
   }, [tab]);
@@ -100,28 +137,26 @@ export default function DashboardAdmin() {
   const fetchLokasi = async () => {
     setLoadingMap(true);
     const since = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
-    const { data } = await supabase
-      .from('lokasi_petugas')
-      .select('*, petugas(nama, unit, kelurahan)')
-      .gte('timestamp', since)
-      .order('timestamp', { ascending: false });
-
-    // Keep only latest per petugas
+    const { data } = await supabase.from('lokasi_petugas').select('*, petugas(nama, unit, kelurahan)').gte('timestamp', since).order('timestamp', { ascending: false });
     const latest = new Map<string, LokasiFresh>();
-    (data || []).forEach((l: any) => {
-      if (!latest.has(l.petugas_id)) latest.set(l.petugas_id, l);
-    });
+    (data || []).forEach((l: any) => { if (!latest.has(l.petugas_id)) latest.set(l.petugas_id, l); });
     setLokasiList(Array.from(latest.values()));
     setLoadingMap(false);
   };
 
   const fetchAbsensi = async () => {
     setLoadingAbsensi(true);
-    const { data } = await supabase
-      .from('absensi')
-      .select('*, petugas(nama, unit, kelurahan, nip)')
-      .eq('tanggal', absensiDate)
-      .order('jam_masuk', { ascending: false });
+    let query = supabase.from('absensi').select('*, petugas(nama, unit, kelurahan, nip)').order('tanggal', { ascending: false }).order('jam_masuk', { ascending: false });
+    if (absensiMode === 'harian') {
+      query = query.eq('tanggal', absensiDate);
+    } else {
+      const [y, m] = absensiMonth.split('-');
+      const from = `${y}-${m}-01`;
+      const lastDay = new Date(Number(y), Number(m), 0).getDate();
+      const to = `${y}-${m}-${String(lastDay).padStart(2,'0')}`;
+      query = query.gte('tanggal', from).lte('tanggal', to);
+    }
+    const { data } = await query;
     setAbsensiList(data || []);
     setLoadingAbsensi(false);
   };
@@ -129,13 +164,16 @@ export default function DashboardAdmin() {
   const fetchFoto = async () => {
     setLoadingFoto(true);
     const today = new Date().toISOString().split('T')[0];
-    const { data } = await supabase
-      .from('foto_bukti')
-      .select('*, petugas(nama, unit)')
-      .gte('uploaded_at', today + 'T00:00:00')
-      .order('uploaded_at', { ascending: false });
+    const { data } = await supabase.from('foto_bukti').select('*, petugas(nama, unit)').gte('uploaded_at', today + 'T00:00:00').order('uploaded_at', { ascending: false });
     setFotoList(data || []);
     setLoadingFoto(false);
+  };
+
+  const fetchFotoKegiatan = async () => {
+    setLoadingGaleri(true);
+    const { data } = await supabase.from('foto_kegiatan').select('*, petugas(nama, unit, kelurahan)').order('uploaded_at', { ascending: false }).limit(60);
+    setFotoKegiatanList(data || []);
+    setLoadingGaleri(false);
   };
 
   const fetchPetugas = async () => {
@@ -147,21 +185,14 @@ export default function DashboardAdmin() {
 
   const handleCreatePetugas = async () => {
     setCreateError('');
-    if (!form.nama || !form.nip || !form.username || !form.password) {
-      setCreateError('Semua field wajib diisi.'); return;
-    }
+    if (!form.nama || !form.nip || !form.username || !form.password) { setCreateError('Semua field wajib diisi.'); return; }
     setCreating(true);
-    const { error } = await supabase.from('petugas').insert({
-      nama: form.nama, nip: form.nip, unit: form.unit,
-      kelurahan: form.kelurahan, nomor_hp: form.nomor_hp,
-      username: form.username, password_hash: form.password,
-      role: form.role, aktif: true,
-    });
+    const { error } = await supabase.from('petugas').insert({ nama: form.nama, nip: form.nip, unit: form.unit, kelurahan: form.kelurahan, nomor_hp: form.nomor_hp, username: form.username, password_hash: form.password, role: form.role, aktif: true });
     setCreating(false);
     if (error) { setCreateError('Gagal: ' + (error.message.includes('duplicate') ? 'Username/NIP sudah ada' : error.message)); return; }
     showToast('Akun petugas berhasil dibuat!', 'ok');
     setShowCreateForm(false);
-    setForm({ nama: '', nip: '', unit: 'melati', kelurahan: 'Siti Rejo I', nomor_hp: '', username: '', password: '', role: 'petugas' });
+    setForm({ nama:'', nip:'', unit:'melati', kelurahan:'Kwala Bekala', nomor_hp:'', username:'', password:'', role:'petugas' });
     fetchPetugas();
   };
 
@@ -175,10 +206,38 @@ export default function DashboardAdmin() {
 
   const formatTime = (iso: string | null) => {
     if (!iso) return '—';
-    return new Date(iso).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' });
+    return new Date(iso).toLocaleTimeString('id-ID', { hour:'2-digit', minute:'2-digit' });
   };
   const formatTimestamp = (iso: string) =>
-    new Date(iso).toLocaleString('id-ID', { hour: '2-digit', minute: '2-digit', day: 'numeric', month: 'short' });
+    new Date(iso).toLocaleString('id-ID', { hour:'2-digit', minute:'2-digit', day:'numeric', month:'short' });
+  const formatDate = (d: string) =>
+    new Date(d).toLocaleDateString('id-ID', { weekday:'short', day:'numeric', month:'short', year:'numeric' });
+
+  const calcDurasi = (masuk: string|null, keluar: string|null) => {
+    if (!masuk || !keluar) return '—';
+    const diff = (new Date(keluar).getTime() - new Date(masuk).getTime()) / 60000;
+    const h = Math.floor(diff / 60); const m = Math.round(diff % 60);
+    return `${h > 0 ? h+'j ' : ''}${m}m`;
+  };
+
+  const handleExportExcel = () => {
+    if (absensiList.length === 0) { showToast('Tidak ada data untuk diekspor', 'err'); return; }
+    const rows = absensiList.map(a => ({
+      'Tanggal': a.tanggal || '',
+      'Nama': a.petugas?.nama || '',
+      'NIP': a.petugas?.nip || '',
+      'Unit': a.petugas?.unit || '',
+      'Kelurahan': a.petugas?.kelurahan || '',
+      'Jam Masuk': formatTime(a.jam_masuk),
+      'Jam Keluar': formatTime(a.jam_keluar),
+      'Durasi': calcDurasi(a.jam_masuk, a.jam_keluar),
+      'Foto Bukti': a.foto_bukti_url ? 'Ya' : 'Tidak',
+      'Status': a.jam_keluar ? 'Selesai' : a.jam_masuk ? 'Bertugas' : 'Belum Absen',
+    }));
+    const label = absensiMode === 'harian' ? absensiDate : absensiMonth;
+    exportToExcel(rows, `Absensi-SijagaJohor-${label}`);
+    showToast('Data berhasil diekspor!', 'ok');
+  };
 
   const filteredAbsensi = absensiList.filter(a =>
     a.petugas?.nama?.toLowerCase().includes(search.toLowerCase()) ||
@@ -189,6 +248,7 @@ export default function DashboardAdmin() {
     p.nip.toLowerCase().includes(search.toLowerCase())
   );
 
+  // Stats for absensi
   const stats = {
     total: absensiList.length,
     hadir: absensiList.filter(a => a.jam_masuk).length,
@@ -202,14 +262,10 @@ export default function DashboardAdmin() {
 
   return (
     <div className="min-h-screen bg-mj-cream">
-
       {/* Toast */}
       {toast && (
-        <div className={`fixed top-4 right-4 z-50 flex items-center gap-3 px-5 py-3.5 rounded-xl shadow-2xl font-body text-sm font-semibold ${
-          toast.type === 'ok' ? 'bg-emerald-600 text-white' : 'bg-mj-red text-white'
-        }`}>
-          {toast.type === 'ok' ? <CheckCircle size={16} /> : <AlertTriangle size={16} />}
-          {toast.msg}
+        <div className={`fixed top-4 right-4 z-50 flex items-center gap-3 px-5 py-3.5 rounded-xl shadow-2xl font-body text-sm font-semibold ${toast.type === 'ok' ? 'bg-emerald-600 text-white' : 'bg-mj-red text-white'}`}>
+          {toast.type === 'ok' ? <CheckCircle size={16} /> : <AlertTriangle size={16} />} {toast.msg}
         </div>
       )}
 
@@ -217,9 +273,7 @@ export default function DashboardAdmin() {
       {selectedFoto && (
         <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4" onClick={() => setSelectedFoto(null)}>
           <div className="relative max-w-2xl w-full" onClick={e => e.stopPropagation()}>
-            <button onClick={() => setSelectedFoto(null)} className="absolute -top-10 right-0 text-white/70 hover:text-white">
-              <X size={24} />
-            </button>
+            <button onClick={() => setSelectedFoto(null)} className="absolute -top-10 right-0 text-white/70 hover:text-white"><X size={24} /></button>
             <img src={selectedFoto} alt="Bukti" className="w-full rounded-2xl" />
           </div>
         </div>
@@ -239,23 +293,21 @@ export default function DashboardAdmin() {
           </div>
           <div className="flex items-center gap-3">
             <p className="font-display font-bold text-white text-base tracking-wider hidden md:block">{time}</p>
-            <button onClick={handleLogout}
-              className="flex items-center gap-1.5 bg-white/10 hover:bg-mj-red text-white text-xs font-body font-semibold px-3 py-2 rounded-xl transition-colors">
+            <button onClick={handleLogout} className="flex items-center gap-1.5 bg-white/10 hover:bg-mj-red text-white text-xs font-body font-semibold px-3 py-2 rounded-xl transition-colors">
               <LogOut size={13} /> Keluar
             </button>
           </div>
         </div>
-
         {/* TABS */}
         <div className="max-w-6xl mx-auto px-4 flex gap-0 overflow-x-auto">
           {([
-            { key: 'peta', label: 'Peta Live', icon: MapPin },
-            { key: 'absensi', label: 'Absensi', icon: ClipboardList },
-            { key: 'foto', label: 'Bukti Foto', icon: Camera },
-            { key: 'petugas', label: 'Data Petugas', icon: Users },
+            { key: 'peta',    label: 'Peta Live',     icon: MapPin },
+            { key: 'absensi', label: 'Absensi',        icon: ClipboardList },
+            { key: 'foto',    label: 'Bukti Foto',     icon: Camera },
+            { key: 'galeri',  label: 'Galeri Kegiatan', icon: Image },
+            { key: 'petugas', label: 'Data Petugas',   icon: Users },
           ] as { key: Tab; label: string; icon: any }[]).map(t => {
-            const Icon = t.icon;
-            const active = tab === t.key;
+            const Icon = t.icon; const active = tab === t.key;
             return (
               <button key={t.key} onClick={() => { setTab(t.key); setSearch(''); }}
                 className={`flex items-center gap-1.5 px-4 py-3 text-xs font-body font-semibold whitespace-nowrap border-b-2 transition-all ${
@@ -270,13 +322,13 @@ export default function DashboardAdmin() {
 
       <div className="max-w-6xl mx-auto px-4 py-6">
 
-        {/* ══════ TAB: PETA LIVE ══════ */}
+        {/* ══ TAB: PETA LIVE ══ */}
         {tab === 'peta' && (
           <div className="space-y-4">
             <div className="flex items-center justify-between">
               <div>
                 <h2 className="font-display font-black text-mj-blue text-2xl uppercase tracking-wide">Lokasi Real-Time</h2>
-                <p className="text-mj-blue/50 text-sm font-body">Update otomatis setiap 30 detik</p>
+                <p className="text-mj-blue/50 text-sm font-body">Update otomatis setiap 30 detik · Hover/klik pin untuk detail</p>
               </div>
               <button onClick={fetchLokasi} disabled={loadingMap}
                 className="flex items-center gap-2 bg-mj-blue text-white text-xs font-body font-bold px-4 py-2.5 rounded-xl hover:bg-mj-blue-mid transition-colors">
@@ -284,7 +336,7 @@ export default function DashboardAdmin() {
               </button>
             </div>
 
-            {/* Map area - embed Google Maps with markers */}
+            {/* MAP */}
             <div className="bg-white rounded-2xl border border-blue-50 overflow-hidden shadow-sm">
               {lokasiList.length === 0 ? (
                 <div className="h-80 flex flex-col items-center justify-center text-center p-8">
@@ -299,27 +351,26 @@ export default function DashboardAdmin() {
                   )}
                 </div>
               ) : (
-                <>
-                  {/* Embed map via iframe (OpenStreetMap) */}
-                  <div className="relative h-80 bg-blue-50">
-                    <iframe
-                      src={`https://www.openstreetmap.org/export/embed.html?bbox=98.60,3.52,98.75,3.62&layer=mapnik&marker=${lokasiList[0]?.latitude},${lokasiList[0]?.longitude}`}
-                      className="w-full h-full border-0"
-                      title="Peta Lokasi Petugas"
-                    />
-                    <div className="absolute bottom-3 right-3 bg-white/90 backdrop-blur rounded-xl px-3 py-1.5 flex items-center gap-1.5 shadow">
-                      <div className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse" />
-                      <span className="text-xs font-body font-semibold text-gray-700">{lokasiList.length} Petugas Live</span>
-                    </div>
+                <div className="relative">
+                  <MapPetugas locations={lokasiList} />
+                  <div className="absolute bottom-3 right-3 bg-white/95 backdrop-blur rounded-xl px-3 py-1.5 flex items-center gap-1.5 shadow-lg z-10">
+                    <div className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse" />
+                    <span className="text-xs font-body font-semibold text-gray-700">{lokasiList.length} Petugas Live</span>
                   </div>
-                </>
+                  {/* Legend */}
+                  <div className="absolute top-3 left-3 bg-white/95 backdrop-blur rounded-xl px-3 py-2 shadow-lg z-10 space-y-1">
+                    <p className="text-gray-500 text-xs font-body font-semibold uppercase tracking-wide mb-1">Unit</p>
+                    <div className="flex items-center gap-1.5"><div className="w-3 h-3 rounded-full bg-emerald-500" /><span className="text-xs font-body text-gray-600">Melati</span></div>
+                    <div className="flex items-center gap-1.5"><div className="w-3 h-3 rounded-full bg-orange-500" /><span className="text-xs font-body text-gray-600">Bestari</span></div>
+                  </div>
+                </div>
               )}
             </div>
 
             {/* Petugas cards */}
             {lokasiList.length > 0 && (
               <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
-                {lokasiList.map((l, i) => (
+                {lokasiList.map((l) => (
                   <div key={l.petugas_id} className="bg-white rounded-xl p-4 border border-blue-50 shadow-sm">
                     <div className="flex items-start justify-between mb-2">
                       <div className="flex items-center gap-2">
@@ -328,7 +379,12 @@ export default function DashboardAdmin() {
                         </div>
                         <div>
                           <p className="font-body font-bold text-mj-blue text-sm">{l.petugas?.nama}</p>
-                          <p className="text-mj-blue/40 text-xs">{l.petugas?.kelurahan}</p>
+                          <div className="flex items-center gap-1.5">
+                            <span className={`text-xs font-bold px-1.5 py-0.5 rounded-full ${l.petugas?.unit === 'melati' ? 'bg-emerald-100 text-emerald-700' : 'bg-orange-100 text-orange-700'}`}>
+                              {l.petugas?.unit === 'melati' ? 'Melati' : 'Bestari'}
+                            </span>
+                            <p className="text-mj-blue/40 text-xs">{l.petugas?.kelurahan}</p>
+                          </div>
                         </div>
                       </div>
                       <div className="flex items-center gap-1">
@@ -339,9 +395,7 @@ export default function DashboardAdmin() {
                     <div className="bg-gray-50 rounded-lg px-3 py-2 text-xs font-mono text-gray-500">
                       {l.latitude.toFixed(5)}, {l.longitude.toFixed(5)}
                     </div>
-                    <p className="text-gray-400 text-xs font-body mt-1.5">
-                      Update: {formatTimestamp(l.timestamp)}
-                    </p>
+                    <p className="text-gray-400 text-xs font-body mt-1.5">Update: {formatTimestamp(l.timestamp)}</p>
                     <a href={`https://maps.google.com/?q=${l.latitude},${l.longitude}`} target="_blank" rel="noopener noreferrer"
                       className="mt-2 flex items-center justify-center gap-1.5 text-mj-blue text-xs font-body font-semibold bg-blue-50 hover:bg-blue-100 py-2 rounded-lg transition-colors">
                       <Navigation size={11} /> Buka di Google Maps
@@ -353,19 +407,45 @@ export default function DashboardAdmin() {
           </div>
         )}
 
-        {/* ══════ TAB: ABSENSI ══════ */}
+        {/* ══ TAB: ABSENSI ══ */}
         {tab === 'absensi' && (
           <div className="space-y-4">
-            <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex flex-wrap items-start justify-between gap-3">
               <div>
                 <h2 className="font-display font-black text-mj-blue text-2xl uppercase tracking-wide">Data Absensi</h2>
-                <p className="text-mj-blue/50 text-sm font-body">Rekap kehadiran petugas harian</p>
+                <p className="text-mj-blue/50 text-sm font-body">
+                  {absensiMode === 'harian' ? 'Rekap kehadiran harian' : 'Rekap kehadiran bulanan'}
+                </p>
               </div>
-              <input type="date" value={absensiDate} onChange={e => setAbsensiDate(e.target.value)}
-                className="border border-gray-200 rounded-xl px-3 py-2.5 font-body text-sm text-mj-blue focus:outline-none focus:ring-2 focus:ring-mj-blue/20" />
+              <div className="flex flex-wrap items-center gap-2">
+                {/* Mode toggle */}
+                <div className="flex bg-white border border-gray-200 rounded-xl p-1 gap-1">
+                  <button onClick={() => setAbsensiMode('harian')}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-body font-semibold transition-all ${absensiMode === 'harian' ? 'bg-mj-blue text-white' : 'text-gray-400 hover:text-mj-blue'}`}>
+                    Harian
+                  </button>
+                  <button onClick={() => setAbsensiMode('bulanan')}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-body font-semibold transition-all ${absensiMode === 'bulanan' ? 'bg-mj-blue text-white' : 'text-gray-400 hover:text-mj-blue'}`}>
+                    Bulanan
+                  </button>
+                </div>
+                {/* Date / Month picker */}
+                {absensiMode === 'harian' ? (
+                  <input type="date" value={absensiDate} onChange={e => setAbsensiDate(e.target.value)}
+                    className="border border-gray-200 rounded-xl px-3 py-2.5 font-body text-sm text-mj-blue focus:outline-none focus:ring-2 focus:ring-mj-blue/20" />
+                ) : (
+                  <input type="month" value={absensiMonth} onChange={e => setAbsensiMonth(e.target.value)}
+                    className="border border-gray-200 rounded-xl px-3 py-2.5 font-body text-sm text-mj-blue focus:outline-none focus:ring-2 focus:ring-mj-blue/20" />
+                )}
+                {/* Export button */}
+                <button onClick={handleExportExcel}
+                  className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-body font-bold px-4 py-2.5 rounded-xl transition-colors">
+                  <Download size={13} /> Export Excel
+                </button>
+              </div>
             </div>
 
-            {/* Stats row */}
+            {/* Stats */}
             <div className="grid grid-cols-4 gap-3">
               {[
                 { label: 'Total', val: stats.total, color: 'bg-blue-50 text-mj-blue' },
@@ -395,60 +475,86 @@ export default function DashboardAdmin() {
                 <p className="font-display font-bold text-mj-blue/40 uppercase">Belum Ada Data Absensi</p>
               </div>
             ) : (
-              <div className="space-y-2">
-                {filteredAbsensi.map(a => (
-                  <div key={a.id} className="bg-white rounded-xl p-4 border border-blue-50 shadow-sm flex flex-wrap items-center gap-3">
-                    <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${
-                      a.petugas?.unit === 'melati' ? 'bg-emerald-100' : 'bg-orange-100'
-                    }`}>
-                      {a.petugas?.unit === 'melati'
-                        ? <Leaf size={18} className="text-emerald-600" />
-                        : <Truck size={18} className="text-orange-600" />
-                      }
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <p className="font-body font-bold text-mj-blue text-sm truncate">{a.petugas?.nama}</p>
-                      <p className="text-mj-blue/40 text-xs font-body">{a.petugas?.nip} · {a.petugas?.kelurahan}</p>
-                    </div>
-                    <div className="flex items-center gap-3 text-xs font-body">
-                      <div className="text-center">
-                        <p className="text-gray-400 mb-0.5">Masuk</p>
-                        <p className={`font-bold ${a.jam_masuk ? 'text-emerald-600' : 'text-gray-300'}`}>{formatTime(a.jam_masuk)}</p>
+              <div className="bg-white rounded-2xl border border-blue-50 shadow-sm overflow-hidden">
+                {/* Table header */}
+                <div className="hidden md:grid grid-cols-12 gap-2 px-4 py-3 bg-gray-50 border-b border-gray-100 text-xs font-body font-semibold text-gray-400 uppercase tracking-wide">
+                  <div className="col-span-3">Nama</div>
+                  {absensiMode === 'bulanan' && <div className="col-span-2">Tanggal</div>}
+                  <div className={absensiMode === 'bulanan' ? 'col-span-2' : 'col-span-3'}>Masuk / Keluar</div>
+                  <div className="col-span-1">Durasi</div>
+                  <div className="col-span-2">Unit</div>
+                  <div className="col-span-1">Foto</div>
+                  <div className="col-span-2">Status</div>
+                </div>
+                <div className="divide-y divide-gray-50">
+                  {filteredAbsensi.map(a => (
+                    <div key={a.id} className="flex flex-wrap md:grid md:grid-cols-12 gap-2 items-center px-4 py-3 hover:bg-gray-50/60 transition-colors">
+                      {/* Nama */}
+                      <div className="col-span-3 flex items-center gap-2 min-w-0">
+                        <div className={`w-7 h-7 rounded-lg flex items-center justify-center shrink-0 ${a.petugas?.unit === 'melati' ? 'bg-emerald-100' : 'bg-orange-100'}`}>
+                          {a.petugas?.unit === 'melati' ? <Leaf size={13} className="text-emerald-600" /> : <Truck size={13} className="text-orange-600" />}
+                        </div>
+                        <div className="min-w-0">
+                          <p className="font-body font-bold text-mj-blue text-sm truncate">{a.petugas?.nama}</p>
+                          <p className="text-mj-blue/40 text-xs">{a.petugas?.nip}</p>
+                        </div>
                       </div>
-                      <div className="text-center">
-                        <p className="text-gray-400 mb-0.5">Keluar</p>
-                        <p className={`font-bold ${a.jam_keluar ? 'text-mj-blue' : 'text-gray-300'}`}>{formatTime(a.jam_keluar)}</p>
+                      {/* Tanggal (bulanan mode only) */}
+                      {absensiMode === 'bulanan' && (
+                        <div className="col-span-2 text-xs font-body text-gray-500">{formatDate(a.tanggal)}</div>
+                      )}
+                      {/* Masuk / Keluar */}
+                      <div className={`${absensiMode === 'bulanan' ? 'col-span-2' : 'col-span-3'} text-xs font-body`}>
+                        <span className={a.jam_masuk ? 'text-emerald-600 font-bold' : 'text-gray-300'}>{formatTime(a.jam_masuk)}</span>
+                        <span className="text-gray-300 mx-1">→</span>
+                        <span className={a.jam_keluar ? 'text-mj-blue font-bold' : 'text-gray-300'}>{formatTime(a.jam_keluar)}</span>
                       </div>
-                      <div className="text-center">
-                        <p className="text-gray-400 mb-0.5">Foto</p>
+                      {/* Durasi */}
+                      <div className="col-span-1 text-xs font-body font-mono text-gray-400">{calcDurasi(a.jam_masuk, a.jam_keluar)}</div>
+                      {/* Unit & kelurahan */}
+                      <div className="col-span-2 text-xs font-body">
+                        <span className={`px-1.5 py-0.5 rounded-full font-bold text-xs ${a.petugas?.unit === 'melati' ? 'bg-emerald-100 text-emerald-700' : 'bg-orange-100 text-orange-700'}`}>
+                          {a.petugas?.unit}
+                        </span>
+                        <p className="text-gray-400 text-xs mt-0.5 truncate">{a.petugas?.kelurahan}</p>
+                      </div>
+                      {/* Foto */}
+                      <div className="col-span-1">
                         {a.foto_bukti_url
-                          ? <button onClick={() => setSelectedFoto(a.foto_bukti_url!)}><CheckCircle size={16} className="text-emerald-500 mx-auto" /></button>
-                          : <XCircle size={16} className="text-gray-300 mx-auto" />
-                        }
+                          ? <button onClick={() => setSelectedFoto(a.foto_bukti_url!)}><CheckCircle size={16} className="text-emerald-500" /></button>
+                          : <XCircle size={16} className="text-gray-300" />}
+                      </div>
+                      {/* Status */}
+                      <div className="col-span-2">
+                        <span className={`px-2.5 py-1 rounded-full text-xs font-bold ${
+                          a.jam_keluar ? 'bg-emerald-100 text-emerald-700' : a.jam_masuk ? 'bg-blue-100 text-mj-blue' : 'bg-gray-100 text-gray-400'
+                        }`}>
+                          {a.jam_keluar ? 'Selesai' : a.jam_masuk ? 'Bertugas' : 'Belum Absen'}
+                        </span>
                       </div>
                     </div>
-                    <span className={`px-2.5 py-1 rounded-full text-xs font-bold ${
-                      a.jam_keluar ? 'bg-emerald-100 text-emerald-700' :
-                      a.jam_masuk ? 'bg-blue-100 text-mj-blue' :
-                      'bg-gray-100 text-gray-400'
-                    }`}>
-                      {a.jam_keluar ? 'Selesai' : a.jam_masuk ? 'Bertugas' : 'Belum Absen'}
-                    </span>
-                  </div>
-                ))}
+                  ))}
+                </div>
+                {/* Footer summary */}
+                <div className="px-4 py-3 bg-gray-50 border-t border-gray-100 flex items-center justify-between">
+                  <p className="text-xs font-body text-gray-400">{filteredAbsensi.length} record ditampilkan</p>
+                  <button onClick={handleExportExcel}
+                    className="flex items-center gap-1.5 text-emerald-600 hover:text-emerald-700 text-xs font-body font-semibold transition-colors">
+                    <Download size={12} /> Download Excel
+                  </button>
+                </div>
               </div>
             )}
           </div>
         )}
 
-        {/* ══════ TAB: BUKTI FOTO ══════ */}
+        {/* ══ TAB: BUKTI FOTO ══ */}
         {tab === 'foto' && (
           <div className="space-y-4">
             <div>
               <h2 className="font-display font-black text-mj-blue text-2xl uppercase tracking-wide">Bukti Foto Tugas</h2>
               <p className="text-mj-blue/50 text-sm font-body">Foto bukti yang dikirim petugas hari ini</p>
             </div>
-
             {loadingFoto ? (
               <div className="flex justify-center py-12"><Loader2 size={28} className="animate-spin text-mj-blue/30" /></div>
             ) : fotoList.length === 0 ? (
@@ -488,7 +594,71 @@ export default function DashboardAdmin() {
           </div>
         )}
 
-        {/* ══════ TAB: DATA PETUGAS ══════ */}
+        {/* ══ TAB: GALERI KEGIATAN ══ */}
+        {tab === 'galeri' && (
+          <div className="space-y-4">
+            <div className="flex items-center justify-between flex-wrap gap-3">
+              <div>
+                <h2 className="font-display font-black text-mj-blue text-2xl uppercase tracking-wide">Galeri Foto Kegiatan</h2>
+                <p className="text-mj-blue/50 text-sm font-body">Dokumentasi kegiatan harian seluruh petugas</p>
+              </div>
+              <button onClick={fetchFotoKegiatan}
+                className="flex items-center gap-2 bg-mj-blue text-white text-xs font-body font-bold px-4 py-2.5 rounded-xl hover:bg-mj-blue-mid transition-colors">
+                <RefreshCw size={13} className={loadingGaleri ? 'animate-spin' : ''} /> Refresh
+              </button>
+            </div>
+
+            {loadingGaleri ? (
+              <div className="flex justify-center py-12"><Loader2 size={28} className="animate-spin text-mj-blue/30" /></div>
+            ) : fotoKegiatanList.length === 0 ? (
+              <div className="bg-white rounded-2xl p-10 text-center border border-blue-50">
+                <Image size={36} className="mx-auto text-mj-blue/20 mb-3" />
+                <p className="font-display font-bold text-mj-blue/40 uppercase">Belum Ada Foto Kegiatan</p>
+                <p className="text-mj-blue/30 text-sm font-body mt-1">Petugas belum mengirim foto kegiatan</p>
+              </div>
+            ) : (
+              <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                {fotoKegiatanList.map(f => (
+                  <div key={f.id} className="bg-white rounded-2xl border border-blue-50 shadow-sm overflow-hidden group">
+                    {/* Foto */}
+                    <div className="relative cursor-pointer" onClick={() => setSelectedFoto(f.url)}>
+                      <img src={f.url} alt="kegiatan" className="w-full h-52 object-cover group-hover:scale-105 transition-transform duration-300" />
+                      <div className="absolute inset-0 bg-black/0 group-hover:bg-black/25 transition-colors flex items-center justify-center">
+                        <Eye size={24} className="text-white opacity-0 group-hover:opacity-100 transition-opacity" />
+                      </div>
+                      {/* Unit badge */}
+                      <div className={`absolute top-2 left-2 px-2 py-0.5 rounded-full text-xs font-bold text-white shadow ${f.petugas?.unit === 'melati' ? 'bg-emerald-600' : 'bg-orange-500'}`}>
+                        {f.petugas?.unit === 'melati' ? 'Melati' : 'Bestari'}
+                      </div>
+                    </div>
+                    {/* Info */}
+                    <div className="p-4">
+                      {/* Nama & kelurahan */}
+                      <div className="flex items-center gap-2 mb-2">
+                        <div className={`w-7 h-7 rounded-lg flex items-center justify-center shrink-0 ${f.petugas?.unit === 'melati' ? 'bg-emerald-100' : 'bg-orange-100'}`}>
+                          {f.petugas?.unit === 'melati' ? <Leaf size={13} className="text-emerald-600" /> : <Truck size={13} className="text-orange-600" />}
+                        </div>
+                        <div>
+                          <p className="font-body font-bold text-mj-blue text-sm">{f.petugas?.nama}</p>
+                          <p className="text-mj-blue/40 text-xs">{f.petugas?.kelurahan}</p>
+                        </div>
+                      </div>
+                      {/* Deskripsi */}
+                      <p className="font-body text-gray-600 text-sm leading-snug line-clamp-3 mb-2">{f.deskripsi}</p>
+                      {/* Waktu */}
+                      <div className="flex items-center gap-1 text-gray-400">
+                        <Calendar size={11} />
+                        <p className="text-xs font-body">{formatTimestamp(f.uploaded_at)}</p>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ══ TAB: DATA PETUGAS ══ */}
         {tab === 'petugas' && (
           <div className="space-y-4">
             <div className="flex items-center justify-between flex-wrap gap-3">
@@ -502,7 +672,6 @@ export default function DashboardAdmin() {
               </button>
             </div>
 
-            {/* Create form */}
             {showCreateForm && (
               <div className="bg-white rounded-2xl border border-blue-100 p-6 shadow-sm">
                 <div className="flex items-center justify-between mb-5">
@@ -525,8 +694,7 @@ export default function DashboardAdmin() {
                   ].map(f => (
                     <div key={f.key}>
                       <label className="block font-body font-semibold text-mj-blue text-xs mb-1.5 uppercase tracking-wide">{f.label}</label>
-                      <input type={f.type} placeholder={f.placeholder}
-                        value={(form as any)[f.key]} onChange={e => setForm({ ...form, [f.key]: e.target.value })}
+                      <input type={f.type} placeholder={f.placeholder} value={(form as any)[f.key]} onChange={e => setForm({ ...form, [f.key]: e.target.value })}
                         className="w-full border border-gray-200 rounded-xl px-3 py-2.5 font-body text-sm focus:outline-none focus:ring-2 focus:ring-mj-blue/20 text-mj-blue" />
                     </div>
                   ))}
@@ -534,8 +702,7 @@ export default function DashboardAdmin() {
                     <label className="block font-body font-semibold text-mj-blue text-xs mb-1.5 uppercase tracking-wide">Unit</label>
                     <select value={form.unit} onChange={e => setForm({ ...form, unit: e.target.value })}
                       className="w-full border border-gray-200 rounded-xl px-3 py-2.5 font-body text-sm focus:outline-none focus:ring-2 focus:ring-mj-blue/20 text-mj-blue">
-                      <option value="melati">Melati</option>
-                      <option value="bestari">Bestari</option>
+                      <option value="melati">Melati</option><option value="bestari">Bestari</option>
                     </select>
                   </div>
                   <div>
@@ -549,16 +716,12 @@ export default function DashboardAdmin() {
                     <label className="block font-body font-semibold text-mj-blue text-xs mb-1.5 uppercase tracking-wide">Role</label>
                     <select value={form.role} onChange={e => setForm({ ...form, role: e.target.value })}
                       className="w-full border border-gray-200 rounded-xl px-3 py-2.5 font-body text-sm focus:outline-none focus:ring-2 focus:ring-mj-blue/20 text-mj-blue">
-                      <option value="petugas">Petugas</option>
-                      <option value="admin">Admin</option>
+                      <option value="petugas">Petugas</option><option value="admin">Admin</option>
                     </select>
                   </div>
                 </div>
                 <div className="flex gap-3 mt-5">
-                  <button onClick={() => setShowCreateForm(false)}
-                    className="flex-1 border border-gray-200 text-gray-500 font-body font-semibold py-3 rounded-xl hover:bg-gray-50 transition-colors text-sm">
-                    Batal
-                  </button>
+                  <button onClick={() => setShowCreateForm(false)} className="flex-1 border border-gray-200 text-gray-500 font-body font-semibold py-3 rounded-xl hover:bg-gray-50 transition-colors text-sm">Batal</button>
                   <button onClick={handleCreatePetugas} disabled={creating}
                     className="flex-1 flex items-center justify-center gap-2 bg-mj-red text-white font-body font-bold py-3 rounded-xl hover:bg-mj-red-dark transition-colors text-sm disabled:opacity-60">
                     {creating ? <><Loader2 size={15} className="animate-spin" /> Membuat...</> : <><UserPlus size={15} /> Buat Akun</>}
@@ -567,7 +730,6 @@ export default function DashboardAdmin() {
               </div>
             )}
 
-            {/* Search */}
             <div className="relative">
               <Search size={15} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-400" />
               <input type="text" placeholder="Cari nama atau NIP..." value={search} onChange={e => setSearch(e.target.value)}
@@ -580,9 +742,7 @@ export default function DashboardAdmin() {
               <div className="space-y-2">
                 {filteredPetugas.map(p => (
                   <div key={p.id} className="bg-white rounded-xl p-4 border border-blue-50 shadow-sm flex flex-wrap items-center gap-3">
-                    <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${
-                      p.unit === 'melati' ? 'bg-emerald-100' : 'bg-orange-100'
-                    }`}>
+                    <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${p.unit === 'melati' ? 'bg-emerald-100' : 'bg-orange-100'}`}>
                       {p.unit === 'melati' ? <Leaf size={18} className="text-emerald-600" /> : <Truck size={18} className="text-orange-600" />}
                     </div>
                     <div className="flex-1 min-w-0">
@@ -594,13 +754,9 @@ export default function DashboardAdmin() {
                         <Phone size={11} /> {p.nomor_hp}
                       </a>
                     )}
-                    <span className={`px-2.5 py-1 rounded-full text-xs font-bold uppercase ${
-                      p.unit === 'melati' ? 'bg-emerald-100 text-emerald-700' : 'bg-orange-100 text-orange-700'
-                    }`}>{p.unit}</span>
+                    <span className={`px-2.5 py-1 rounded-full text-xs font-bold uppercase ${p.unit === 'melati' ? 'bg-emerald-100 text-emerald-700' : 'bg-orange-100 text-orange-700'}`}>{p.unit}</span>
                     <button onClick={() => toggleAktifPetugas(p.id, p.aktif)}
-                      className={`px-3 py-1.5 rounded-xl text-xs font-body font-bold transition-colors ${
-                        p.aktif ? 'bg-gray-100 text-gray-500 hover:bg-red-100 hover:text-red-600' : 'bg-emerald-100 text-emerald-600 hover:bg-emerald-200'
-                      }`}>
+                      className={`px-3 py-1.5 rounded-xl text-xs font-body font-bold transition-colors ${p.aktif ? 'bg-gray-100 text-gray-500 hover:bg-red-100 hover:text-red-600' : 'bg-emerald-100 text-emerald-600 hover:bg-emerald-200'}`}>
                       {p.aktif ? 'Nonaktifkan' : 'Aktifkan'}
                     </button>
                   </div>
